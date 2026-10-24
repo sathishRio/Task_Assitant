@@ -232,6 +232,20 @@ export default function HomeView({ navigate }) {
             )}
           </Panel>
 
+          {/* Coming up */}
+          {upcoming.length > 0 && (
+            <Panel title="Coming up" count={upcoming.length}>
+              <div className="divide-y divide-stone-200">{upcoming.map(row)}</div>
+              <button
+                type="button"
+                onClick={() => navigate('tasks', { status: 'upcoming' })}
+                className="w-full px-4 py-2.5 border-t-[1.5px] border-stone-200 font-mono text-[11px] font-semibold uppercase tracking-wider text-stone-600 hover:bg-stone-50 hover:text-ink text-left"
+              >
+                All upcoming →
+              </button>
+            </Panel>
+          )}
+
           {/* Roadmap phases */}
           {phases.length > 0 && (
             <Panel title="Roadmap phases" count={phases.length}>
@@ -286,18 +300,6 @@ export default function HomeView({ navigate }) {
           </Panel>
         )}
 
-        {upcoming.length > 0 && (
-          <Panel title="Coming up" count={upcoming.length}>
-            <div className="divide-y divide-stone-200">{upcoming.map(row)}</div>
-            <button
-              type="button"
-              onClick={() => navigate('tasks', { status: 'upcoming' })}
-              className="w-full px-4 py-2.5 border-t-[1.5px] border-stone-200 font-mono text-[11px] font-semibold uppercase tracking-wider text-stone-600 hover:bg-stone-50 hover:text-ink text-left"
-            >
-              All upcoming →
-            </button>
-          </Panel>
-        )}
       </div>
 
       <CertificationForm open={!!editingCert} cert={editingCert === 'new' ? null : editingCert} onClose={() => setEditingCert(null)} />
