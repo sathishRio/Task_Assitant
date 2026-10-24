@@ -349,3 +349,22 @@
 @media (prefers-reduced-motion: reduce) {
   .town-board *, .town-board *::before, .town-board *::after { animation: none !important; transition: none !important; }
 }
+
+/* ---------- Career page, animated designs (views/CareerView.jsx) ---------- */
+@keyframes career-rise { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: none; } }
+@keyframes career-lane { to { background-position: -40px 0; } }
+@keyframes career-pop { 0% { transform: scale(.6); } 70% { transform: scale(1.2); } 100% { transform: scale(1); } }
+.career-rise { animation: career-rise .6s cubic-bezier(.2, .8, .2, 1) both; }
+.career-lift { transition: transform .18s, box-shadow .18s, border-color .18s; }
+.career-lift:hover { transform: translate(-2px, -2px); }
+.career-pop { display: inline-flex; animation: career-pop .35s ease-out; }
+.career-lane .road::after { background-size: 40px 2px; animation: career-lane 1.2s linear infinite; }
+.town-paper {
+  background-color: var(--color-paper);
+  background-image: linear-gradient(#dfe3da 1px, transparent 1px), linear-gradient(90deg, #dfe3da 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .career-rise, .career-pop, .career-lane .road::after { animation: none; }
+  .career-lift, .career-lift:hover { transition: none; transform: none; }
+}
