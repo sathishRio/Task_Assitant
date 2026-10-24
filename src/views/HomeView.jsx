@@ -1,18 +1,16 @@
 import { useState } from 'react';
 import { CircleCheck, Plus, Search } from 'lucide-react';
 import { currentPhase, overallProgress, phaseProgress, useStore } from '../store';
-import { phaseTone } from '../theme';
+import { CERT_STATUSES, phaseTone } from '../theme';
 import { isOverdue, startOfWeek, todayStr } from '../dates';
-import { Button, Card, cx, EmptyState, ProgressBar, TaskRow } from '../ui';
-import { TaskForm } from '../forms';
+import { Badge, Button, Card, cx, EmptyState, ProgressBar, TaskRow } from '../ui';
+import { CertificationForm, TaskForm } from '../forms';
 import PhaseModal from './PhaseModal';
 
 const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 const greeting = (h) => (h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening');
-// "AED 30K–40K / month (1–2 yrs)" → "AED 30K–40K": the chips only need the amount.
-const shortSalary = (s) => (s || '').replace(/\(.*?\)/g, '').replace(/\/\s*month/i, '').trim();
 
 // Panel with a title row and a count chip, as on devobj.com.
 function Panel({ title, count, children, className }) {
@@ -49,10 +47,16 @@ function Stat({ label, value, zone, alert, onClick }) {
 }
 
 export default function HomeView({ navigate }) {
-  const { state } = useStore();
-  const { tasks, categories, phases, profile } = state;
+  const { state, actions } = useStore();
+  const { tasks, categories, phases, profile, certifications = [] } = state;
   const [editing, setEditing] = useState(null); // task | 'new' | null
   const [openPhaseId, setOpenPhaseId] = useState(null);
+  const [editingCert, setEditingCert] = useState(null); // cert | 'new' | null
+  const certStatus = (key) => CERT_STATUSES.find((c) => c.key === key) || CERT_STATUSES[0];
+  const cycleCert = (cert) => {
+    const i = CERT_STATUSES.findIndex((c) => c.key === cert.status);
+    actions.updateCertification(cert.id, { status: CERT_STATUSES[(i + 1) % CERT_STATUSES.length].key });
+  };
 
   const today = todayStr();
   const date = new Date();
@@ -76,7 +80,6 @@ export default function HomeView({ navigate }) {
 
   const overall = overallProgress(phases, tasks);
   const now = currentPhase(phases, tasks);
-  const salaries = [profile?.currentSalary, profile?.shortTermTarget, profile?.mediumTermTarget].map(shortSalary).filter(Boolean);
   const dueCount = dueToday.length + overdue.length;
 
   const row = (t) => (
@@ -123,8 +126,8 @@ export default function HomeView({ navigate }) {
         <Stat label="Done this week" value={doneThisWeek.length} zone="bg-zone-green" onClick={() => navigate('tasks', { status: 'done' })} />
       </div>
 
-      <div className="grid lg:grid-cols-[1.1fr_1fr] gap-5 items-start">
-        <div className="space-y-5 min-w-0">
+      <div className="grid lg:grid-cols-2 gap-5 items-start">
+          <div className="space-y-5 min-w-0">
           {/* Career goal */}
           <button
             type="button"
@@ -141,28 +144,8 @@ export default function HomeView({ navigate }) {
               <span><b className="text-taxi">{overall}%</b> of the road</span>
             </div>
             <ProgressBar percent={overall} gradient />
-            {salaries.length > 0 && (
-              <div className="flex flex-wrap gap-2 mt-4 font-mono text-[11.5px] font-semibold">
-                {salaries.map((s, i) => (
-                  <span key={s} className={cx('rounded-md px-2 py-1 border', i === 1 ? 'bg-taxi border-taxi text-ink' : 'border-road text-on-ink')}>
-                    {i > 0 && '→ '}{s}
-                  </span>
-                ))}
-              </div>
-            )}
           </button>
 
-          {/* Focus today */}
-          <Panel title="Focus today" count={focus.length}>
-            {focus.length ? (
-              <div className="divide-y divide-stone-200">{focus.map(row)}</div>
-            ) : (
-              <div className="p-4"><EmptyState icon={CircleCheck} title="All clear" text="Nothing due today. Nice work!" /></div>
-            )}
-          </Panel>
-        </div>
-
-        <div className="space-y-5 min-w-0">
           {/* Roadmap phases */}
           {phases.length > 0 && (
             <Panel title="Roadmap phases" count={phases.length}>
@@ -172,10 +155,10 @@ export default function HomeView({ navigate }) {
                   const pr = phaseProgress(p, tasks);
                   const isNow = now?.id === p.id;
                   return (
+                    <div key={p.id}>
                     <button
-                      key={p.id}
                       type="button"
-                      onClick={() => setOpenPhaseId(p.id)}
+                      onClick={() => setOpenPhaseId(openPhaseId === p.id ? null : p.id)}
                       className={cx('w-full grid grid-cols-[28px_minmax(0,1fr)_44px] items-center gap-x-3 gap-y-1.5 px-4 py-3 text-left transition', isNow ? 'bg-taxi-soft' : 'hover:bg-stone-50')}
                     >
                       <span
@@ -191,12 +174,65 @@ export default function HomeView({ navigate }) {
                       <span className="row-span-2 text-right font-mono text-xs font-semibold text-stone-700 tabular-nums">{pr.percent}%</span>
                       <ProgressBar percent={pr.percent} color={tone.accent} thin />
                     </button>
+                    {openPhaseId === p.id && <PhaseModal phaseId={p.id} inline onClose={() => setOpenPhaseId(null)} />}
+                    </div>
                   );
                 })}
               </div>
             </Panel>
           )}
 
+          </div>
+          <div className="space-y-5 min-w-0">
+          {/* Focus today */}
+          <Panel title="Focus today" count={focus.length}>
+            {focus.length ? (
+              <div className="divide-y divide-stone-200">{focus.map(row)}</div>
+            ) : (
+              <div className="p-4"><EmptyState icon={CircleCheck} title="All clear" text="Nothing due today. Nice work!" /></div>
+            )}
+          </Panel>
+
+          {/* Certifications */}
+          <Panel title="Recommended Certifications Roadmap" count={`${certifications.filter((c) => c.status === 'passed').length}/${certifications.length}`}>
+            <div className="divide-y divide-stone-200">
+              {certifications.map((c) => {
+                const st = certStatus(c.status);
+                return (
+                  <div
+                    key={c.id}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => setEditingCert(c)}
+                    onKeyDown={(e) => e.key === 'Enter' && setEditingCert(c)}
+                    className="flex items-center gap-3 px-4 py-3 hover:bg-stone-50 cursor-pointer transition"
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="px-2 py-0.5 rounded-md border-[1.5px] border-ink font-mono text-xs font-semibold text-ink">{c.code}</span>
+                        <span className="font-mono text-[10px] font-semibold uppercase tracking-wider text-stone-400">{c.optional ? 'Optional' : 'Core'}</span>
+                      </div>
+                      {c.name && <div className="text-sm text-stone-700 mt-1 truncate">{c.name}</div>}
+                    </div>
+                    <button type="button" onClick={(e) => { e.stopPropagation(); cycleCert(c); }} title="Move to next status">
+                      <Badge pill tone={st.tone}>{st.label}</Badge>
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+            <button
+              type="button"
+              onClick={() => setEditingCert('new')}
+              className="w-full px-4 py-2.5 border-t-[1.5px] border-stone-200 font-mono text-[11px] font-semibold uppercase tracking-wider text-stone-600 hover:bg-stone-50 hover:text-ink text-left"
+            >
+              + Add certification
+            </button>
+          </Panel>
+          </div>
+      </div>
+
+      <div className="grid lg:grid-cols-2 gap-5 items-start">
           {inProgress.length > 0 && (
             <Panel title="In progress" count={inProgress.length}>
               <div className="divide-y divide-stone-200">{inProgress.map(row)}</div>
@@ -215,10 +251,9 @@ export default function HomeView({ navigate }) {
               </button>
             </Panel>
           )}
-        </div>
       </div>
 
-      {openPhaseId && <PhaseModal phaseId={openPhaseId} onClose={() => setOpenPhaseId(null)} />}
+      <CertificationForm open={!!editingCert} cert={editingCert === 'new' ? null : editingCert} onClose={() => setEditingCert(null)} />
       <TaskForm open={!!editing} task={editing === 'new' ? null : editing} defaults={{ dueDate: today }} onClose={() => setEditing(null)} />
     </div>
   );

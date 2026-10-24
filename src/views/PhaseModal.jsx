@@ -5,7 +5,8 @@ import { phaseTone } from '../theme';
 import { Badge, Button, Checkbox, EmptyState, IconButton, MicroHeading, Modal, ProgressBar, TaskItem, cx, inputClass } from '../ui';
 import { PhaseForm, TaskForm } from '../forms';
 
-export default function PhaseModal({ phaseId, onClose }) {
+// inline: render the details in place (expanded row) instead of inside a modal.
+export default function PhaseModal({ phaseId, onClose, inline }) {
   const { state, actions } = useStore();
   const phase = state.phases.find((p) => p.id === phaseId);
   const [newTopic, setNewTopic] = useState('');
@@ -26,13 +27,16 @@ export default function PhaseModal({ phaseId, onClose }) {
     if (title && (await actions.addTopic(phase.id, title))) setNewTopic('');
   };
 
+  const editBtn = <Button variant="ghost" onClick={() => setEditingPhase(true)}>Edit phase</Button>;
+  const wrap = (children) => inline
+    ? <div className="space-y-4 px-4 pb-4 pt-3 border-t border-stone-200">{children}<div className="flex justify-end">{editBtn}</div></div>
+    : <Modal open title={`${phase.order}. ${phase.title}`} onClose={onClose} wide footer={editBtn}>{children}</Modal>;
+
   const isExisting = editingTask && editingTask !== 'new' && editingTask.id;
 
   return (
     <>
-      <Modal open title={`${phase.order}. ${phase.title}`} onClose={onClose} wide footer={
-        <Button variant="ghost" onClick={() => setEditingPhase(true)}>Edit phase</Button>
-      }>
+      {wrap(<>
         <div className="flex flex-wrap items-center gap-3">
           {phase.months && <Badge tone={tone}>{phase.months}</Badge>}
           <span className="text-xs text-stone-500">{progress.done} of {progress.total} items done</span>
@@ -119,7 +123,7 @@ export default function PhaseModal({ phaseId, onClose }) {
             <p className="text-sm text-stone-700 whitespace-pre-line leading-relaxed">{phase.notes}</p>
           </div>
         )}
-      </Modal>
+      </>)}
 
       <TaskForm
         open={!!editingTask}
