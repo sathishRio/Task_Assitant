@@ -1,8 +1,8 @@
 import { useMemo, useState } from 'react';
 import { Link2, Pin, Plus, StickyNote } from 'lucide-react';
 import { useStore } from '../store';
-import { notePaper } from '../theme';
-import { Button, EmptyState, PageHero } from '../ui';
+import { MODES, modeOf, notePaper } from '../theme';
+import { Button, EmptyState, ModeSwitch, PageHero } from '../ui';
 import { NoteForm } from '../forms';
 import TownBoard from '../sticky/TownBoard';
 
@@ -11,7 +11,14 @@ const byPinnedThenRecent = (a, b) => Number(b.pinned) - Number(a.pinned) || (b.u
 
 export default function StickyView() {
   const { state, actions } = useStore();
-  const { notes, tasks } = state;
+  const { tasks, mode } = state;
+  // The board and list show the active workspace (Office or Personal) only.
+  const notes = useMemo(() => state.notes.filter((n) => modeOf(n) === mode), [state.notes, mode]);
+  const modeCounts = useMemo(
+    () => Object.fromEntries(MODES.map((m) => [m.key, state.notes.filter((n) => modeOf(n) === m.key).length])),
+    [state.notes],
+  );
+  const modeLabel = MODES.find((m) => m.key === mode).label;
   const [editing, setEditing] = useState(null); // note | 'new' | null
 
   const taskTitle = useMemo(() => {
@@ -29,7 +36,12 @@ export default function StickyView() {
         eyebrow="Sticky notes · town plan"
         title="Sticky Notes"
         description="Notes taped onto the town plan. Drag a note to move it, click it to edit. Pinned notes live Downtown: drop a note there to pin it."
-        actions={<Button icon={Plus} className="text-sm" onClick={() => setEditing('new')}>New note</Button>}
+        actions={
+          <div className="flex flex-col items-start sm:items-end gap-2">
+            <ModeSwitch value={mode} onChange={actions.setMode} counts={modeCounts} />
+            <Button icon={Plus} className="text-sm" onClick={() => setEditing('new')}>New note</Button>
+          </div>
+        }
       />
 
       <section aria-label="Town plan with your sticky notes">
@@ -48,7 +60,7 @@ export default function StickyView() {
       {/* Plain list: keyboard and screen-reader friendly, and the readable overview on small screens. */}
       <section>
         <div className="flex items-end justify-between gap-3 mb-3">
-          <h2 className="text-xl font-bold text-ink">All notes</h2>
+          <h2 className="text-xl font-bold text-ink">{modeLabel} notes</h2>
           <span className="font-mono text-[11px] font-semibold uppercase tracking-wider text-stone-500">
             {notes.length} total · {pinnedCount} pinned
           </span>
@@ -77,11 +89,11 @@ export default function StickyView() {
             ))}
           </div>
         ) : (
-          <EmptyState icon={StickyNote} title="No notes yet" text="Add a note and it drops onto the town plan." />
+          <EmptyState icon={StickyNote} title={`No ${modeLabel.toLowerCase()} notes yet`} text="Add a note and it drops onto the town plan." />
         )}
       </section>
 
-      <NoteForm open={!!editing} note={editing === 'new' ? null : editing} onClose={() => setEditing(null)} />
+      <NoteForm open={!!editing} note={editing === 'new' ? null : editing} mode={mode} onClose={() => setEditing(null)} />
     </div>
   );
 }

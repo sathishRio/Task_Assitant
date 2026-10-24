@@ -2,6 +2,16 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useReducer 
 import { AuthError, api, getToken, setToken } from './api';
 import { lockVault } from './vaultSession';
 
+// The Office / Personal workspace shown in Tasks and Notes, remembered in this browser.
+const MODE_STORAGE = 'task-assistant/mode';
+const readMode = () => {
+  try {
+    return localStorage.getItem(MODE_STORAGE) === 'office' ? 'office' : 'personal';
+  } catch {
+    return 'personal';
+  }
+};
+
 // Mirrors mobile/src/store.js, minus device reminders: errors surface as a toast instead of an alert.
 const initialState = {
   status: 'loading', // loading | ready | error | auth (signed out)
@@ -14,6 +24,7 @@ const initialState = {
   certifications: [],
   profile: null,
   notes: [],
+  mode: readMode(), // office | personal
 };
 
 function reducer(state, action) {
@@ -26,7 +37,7 @@ function reducer(state, action) {
       return { ...state, status: action.auth ? 'auth' : 'error', error: action.error };
     case 'SIGNED_OUT':
       // Drop all data so nothing from the previous session stays on screen.
-      return { ...initialState, status: 'auth', error: action.error || null };
+      return { ...initialState, mode: state.mode, status: 'auth', error: action.error || null };
     case 'TOAST':
       return { ...state, toast: action.message };
     case 'UPSERT': {
@@ -107,6 +118,14 @@ export function StoreProvider({ children }) {
     const self = {
       reload: load,
       dismissToast: () => dispatch({ type: 'TOAST', message: null }),
+      setMode: (mode) => {
+        try {
+          localStorage.setItem(MODE_STORAGE, mode);
+        } catch {
+          // Storage blocked: the choice lasts until reload.
+        }
+        dispatch({ type: 'SET', key: 'mode', value: mode });
+      },
 
       // Exchanges a Google ID token for a session (or, with no token, uses the dev-mode
       // Admin login); returns an error message or null.

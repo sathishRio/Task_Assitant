@@ -80,3 +80,10 @@ export const NOTE_COLORS = [
   { key: 'pink', label: 'Pink', paper: '#f6c4ea' },
 ];
 export const notePaper = (key) => (NOTE_COLORS.find((c) => c.key === key) || NOTE_COLORS[0]).paper;
+
+// Workspaces for tasks and sticky notes (server: models.js MODES). Records saved before modes existed count as personal.
+export const MODES = [
+  { key: 'office', label: 'Office' },
+  { key: 'personal', label: 'Personal' },
+];
+export const modeOf = (item) => item.mode || 'personal';

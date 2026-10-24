@@ -1,8 +1,8 @@
 import { useEffect, useId, useState } from 'react';
 import { Check } from 'lucide-react';
 import { useStore } from './store';
-import { CATEGORY_COLORS, CERT_STATUSES, NOTE_COLORS, PRIORITIES, STATUSES } from './theme';
-import { Button, Field, Modal, cx, inputClass } from './ui';
+import { CATEGORY_COLORS, CERT_STATUSES, NOTE_COLORS, PRIORITIES, STATUSES, modeOf } from './theme';
+import { Button, Field, ModeSwitch, Modal, cx, inputClass } from './ui';
 
 // Shared shell: modal + form + Cancel/Save footer, with an optional Delete on the left.
 function FormModal({ open, title, onClose, onSubmit, onDelete, deleteLabel, children, wide }) {
@@ -44,11 +44,21 @@ function FormModal({ open, title, onClose, onSubmit, onDelete, deleteLabel, chil
 
 const confirmDelete = (what) => window.confirm(`Delete ${what}? This cannot be undone.`);
 
+// Not a <Field>: a <label> around the switch would forward stray clicks to its first button.
+function WorkspaceField({ value, onChange }) {
+  return (
+    <div>
+      <span className="block font-mono text-[11px] font-semibold text-stone-500 uppercase tracking-wider mb-1.5">Workspace</span>
+      <ModeSwitch value={value} onChange={onChange} />
+    </div>
+  );
+}
+
 /* ---------- Task ---------- */
 
 const emptyTask = (defaults) => ({
   title: '', notes: '', categoryId: null, priority: 'medium', status: 'todo',
-  dueDate: null, dueTime: null, reminder: false, phaseId: null, topicId: null, ...defaults,
+  dueDate: null, dueTime: null, reminder: false, phaseId: null, topicId: null, mode: 'personal', ...defaults,
 });
 
 export function TaskForm({ open, task, defaults, onClose }) {
@@ -59,7 +69,7 @@ export function TaskForm({ open, task, defaults, onClose }) {
 
   useEffect(() => {
     if (!open) return;
-    setForm(task ? { ...emptyTask(), ...task } : emptyTask(defaults));
+    setForm(task ? { ...emptyTask(), ...task, mode: modeOf(task) } : emptyTask(defaults));
     setError('');
     // `defaults` is read once per opening on purpose.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -74,7 +84,7 @@ export function TaskForm({ open, task, defaults, onClose }) {
     const data = {
       title, notes: form.notes.trim(), categoryId: form.categoryId, priority: form.priority, status: form.status,
       dueDate: form.dueDate || null, dueTime: form.dueTime || null, reminder: form.reminder,
-      phaseId: form.phaseId, topicId: form.topicId,
+      phaseId: form.phaseId, topicId: form.topicId, mode: form.mode,
     };
     return task ? actions.updateTask(task.id, data) : actions.createTask(data);
   };
@@ -88,6 +98,7 @@ export function TaskForm({ open, task, defaults, onClose }) {
       deleteLabel="Delete Task"
       onDelete={task && (async () => confirmDelete('this task') && (await actions.deleteTask(task.id)) && onClose())}
     >
+      <WorkspaceField value={form.mode} onChange={(mode) => set({ mode })} />
       <Field label="Title">
         <input autoFocus className={inputClass} value={form.title} onChange={(e) => set({ title: e.target.value })} placeholder="What needs to be done?" />
       </Field>
@@ -233,20 +244,32 @@ export function CategoryForm({ open, category, onClose }) {
 
 const NOTE_MAX = 500;
 
-export function NoteForm({ open, note, onClose }) {
+// `mode` is the workspace a new note starts in.
+export function NoteForm({ open, note, mode = 'personal', onClose }) {
   const { state, actions } = useStore();
-  const [form, setForm] = useState({ text: '', color: 'taxi', pinned: false, taskId: null });
+  const [form, setForm] = useState({ text: '', color: 'taxi', pinned: false, taskId: null, mode });
   const [error, setError] = useState('');
   const set = (patch) => setForm((f) => ({ ...f, ...patch }));
 
   useEffect(() => {
     if (!open) return;
-    setForm(note ? { text: note.text, color: note.color, pinned: note.pinned, taskId: note.taskId } : { text: '', color: 'taxi', pinned: false, taskId: null });
+    setForm(
+      note
+        ? { text: note.text, color: note.color, pinned: note.pinned, taskId: note.taskId, mode: modeOf(note) }
+        : { text: '', color: 'taxi', pinned: false, taskId: null, mode },
+    );
     setError('');
+    // `mode` is read once per opening on purpose.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, note]);
 
-  // Open tasks, plus the linked one even if it is already done.
-  const tasks = state.tasks.filter((t) => t.status !== 'done' || t.id === form.taskId);
+  // Open tasks in the note's workspace, plus the linked one even if it is already done.
+  const tasks = state.tasks.filter((t) => modeOf(t) === form.mode && (t.status !== 'done' || t.id === form.taskId));
+  // Moving a note to the other workspace drops a link to a task that stays behind.
+  const setMode = (next) => {
+    const linked = state.tasks.find((t) => t.id === form.taskId);
+    set({ mode: next, ...(linked && modeOf(linked) !== next ? { taskId: null } : {}) });
+  };
 
   const submit = async () => {
     const text = form.text.trim();
@@ -267,6 +290,7 @@ export function NoteForm({ open, note, onClose }) {
       deleteLabel="Delete note"
       onDelete={note && (async () => confirmDelete('this note') && (await actions.deleteNote(note.id)) && onClose())}
     >
+      <WorkspaceField value={form.mode} onChange={setMode} />
       <Field label={`Note (${form.text.length}/${NOTE_MAX})`}>
         <textarea
           autoFocus

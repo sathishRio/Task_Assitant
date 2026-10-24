@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowUpDown, Bell, Plus, Search, Zap } from 'lucide-react';
 import { useStore } from '../store';
-import { PRIORITIES, priorityOf } from '../theme';
+import { MODES, PRIORITIES, modeOf, priorityOf } from '../theme';
 import { isOverdue, todayStr } from '../dates';
-import { Button, Card, EmptyState, InsightCard, MetricCard, PageHero, TaskItem, cx, inputClass, selectClass } from '../ui';
+import { Button, Card, EmptyState, InsightCard, MetricCard, ModeSwitch, PageHero, TaskItem, cx, inputClass, selectClass } from '../ui';
 import { TaskForm } from '../forms';
 
 const TABS = [
@@ -46,7 +46,14 @@ const TIPS = [
 // `preset` lets other views open this list pre-filtered, e.g. { categoryId } from Categories.
 export default function TasksView({ preset }) {
   const { state, actions } = useStore();
-  const { tasks, categories, phases } = state;
+  const { categories, phases, mode } = state;
+  // Everything below works on the active workspace (Office or Personal) only.
+  const tasks = useMemo(() => state.tasks.filter((t) => modeOf(t) === mode), [state.tasks, mode]);
+  const modeCounts = useMemo(
+    () => Object.fromEntries(MODES.map((m) => [m.key, state.tasks.filter((t) => modeOf(t) === m.key && t.status !== 'done').length])),
+    [state.tasks],
+  );
+  const modeLabel = MODES.find((m) => m.key === mode).label;
   const [query, setQuery] = useState('');
   const [tab, setTab] = useState('open');
   const [categoryId, setCategoryId] = useState('all');
@@ -110,7 +117,7 @@ export default function TasksView({ preset }) {
     if (!title) return;
     const created = await actions.createTask({
       title, priority: quickPriority, categoryId: quickCategory || null, status: 'todo', notes: '',
-      reminder: false, dueDate: null, dueTime: null, phaseId: null, topicId: null,
+      reminder: false, dueDate: null, dueTime: null, phaseId: null, topicId: null, mode,
     });
     if (created) setQuickTitle('');
   };
@@ -124,7 +131,12 @@ export default function TasksView({ preset }) {
         eyebrow="Actionable Execution Engine"
         title="Task Tracker & Reminders"
         description="Organize daily commitments, track execution momentum, and stay on schedule with timely reminders."
-        actions={<Button icon={Plus} onClick={() => setEditing('new')}>New Task & Reminder</Button>}
+        actions={
+          <div className="flex flex-col items-start sm:items-end gap-2">
+            <ModeSwitch value={mode} onChange={actions.setMode} counts={modeCounts} />
+            <Button icon={Plus} onClick={() => setEditing('new')}>New Task & Reminder</Button>
+          </div>
+        }
       >
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-5">
           <MetricCard label="Overall progress" value={`${pct}%`} note={`${done} of ${tasks.length} finished`} />
@@ -152,7 +164,7 @@ export default function TasksView({ preset }) {
             className={cx(inputClass, 'flex-1')}
             value={quickTitle}
             onChange={(e) => setQuickTitle(e.target.value)}
-            placeholder="Add a new task quickly… (press Enter to save)"
+            placeholder={`Add a new ${modeLabel.toLowerCase()} task quickly… (press Enter to save)`}
           />
           <div className="flex flex-wrap gap-2">
             <select className={selectClass} value={quickPriority} onChange={(e) => setQuickPriority(e.target.value)} aria-label="Priority">
@@ -227,7 +239,7 @@ export default function TasksView({ preset }) {
         ))}
         {filtered.length === 0 && (
           <EmptyState
-            title={tasks.length ? 'No matching tasks' : 'No tasks yet'}
+            title={tasks.length ? 'No matching tasks' : `No ${modeLabel.toLowerCase()} tasks yet`}
             text={tasks.length ? 'Try another tab or clear the filters.' : 'Add your first task with the quick-add bar above.'}
           />
         )}
@@ -244,6 +256,7 @@ export default function TasksView({ preset }) {
         task={editing?.id ? editing : null}
         // New tasks inherit the active category / goal filter, plus anything typed in quick add.
         defaults={{
+          mode,
           categoryId: catById(categoryId) ? categoryId : null,
           phaseId: phaseById(phaseId) ? phaseId : null,
           ...(fromQuickAdd ? { title: editing.title, priority: quickPriority, categoryId: quickCategory || null, dueDate: today, reminder: true } : {}),

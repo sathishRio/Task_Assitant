@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
-import { Bell, Calendar, Check, Flag, Pencil, Sparkles, Trash, TriangleAlert, X } from 'lucide-react';
+import { Bell, BriefcaseBusiness, Calendar, Check, Flag, House, Pencil, Sparkles, Trash, TriangleAlert, X } from 'lucide-react';
 import { useStore } from './store';
-import { phaseTone, priorityOf, toneFor, TONES } from './theme';
+import { MODES, phaseTone, priorityOf, toneFor, TONES } from './theme';
 import { formatDate, isOverdue, todayStr } from './dates';
 
 const cx = (...c) => c.filter(Boolean).join(' ');
@@ -64,6 +64,41 @@ export function Field({ label, children, className }) {
       <span className="block font-mono text-[11px] font-semibold text-stone-500 uppercase tracking-wider mb-1.5">{label}</span>
       {children}
     </label>
+  );
+}
+
+// Office / Personal segmented switch. Tasks and Notes use it for the active workspace; forms use it per item.
+const MODE_ICONS = { office: BriefcaseBusiness, personal: House };
+
+export function ModeSwitch({ value, onChange, counts, className }) {
+  return (
+    <div role="radiogroup" aria-label="Workspace" className={cx('inline-flex p-1 gap-1 rounded-[12px] border-[1.5px] border-ink bg-white', className)}>
+      {MODES.map(({ key, label }) => {
+        const Icon = MODE_ICONS[key];
+        const active = value === key;
+        return (
+          <button
+            key={key}
+            type="button"
+            role="radio"
+            aria-checked={active}
+            onClick={() => onChange(key)}
+            className={cx(
+              'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[8px] text-xs font-semibold whitespace-nowrap transition',
+              active ? (key === 'office' ? 'bg-zone-blue text-white' : 'bg-taxi text-ink') : 'text-stone-600 hover:bg-stone-100 hover:text-ink',
+            )}
+          >
+            <Icon className="w-3.5 h-3.5" />
+            {label}
+            {counts && (
+              <span className={cx('min-w-5 px-1.5 py-0.5 rounded-full text-[10px] font-bold', active ? 'bg-black/15' : 'bg-stone-200 text-stone-700')}>
+                {counts[key]}
+              </span>
+            )}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
