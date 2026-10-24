@@ -58,7 +58,7 @@ function WorkspaceField({ value, onChange }) {
 
 const emptyTask = (defaults) => ({
   title: '', notes: '', categoryId: null, priority: 'medium', status: 'todo',
-  dueDate: null, dueTime: null, reminder: false, phaseId: null, topicId: null, mode: 'personal', ...defaults,
+  dueDate: null, dueTime: null, reminder: false, phaseId: null, topicId: null, parentId: null, background: false, mode: 'personal', ...defaults,
 });
 
 export function TaskForm({ open, task, defaults, onClose }) {
@@ -76,6 +76,12 @@ export function TaskForm({ open, task, defaults, onClose }) {
   }, [open, task]);
 
   const phase = state.phases.find((p) => p.id === form.phaseId);
+  // An objective's actions are one level deep: a task that has actions can't become one,
+  // and only top-level open tasks (plus the current one) can be picked as its objective.
+  const hasActions = !!task && state.tasks.some((t) => t.parentId === task.id);
+  const objectives = state.tasks.filter(
+    (t) => !t.parentId && t.id !== task?.id && modeOf(t) === form.mode && (t.status !== 'done' || t.id === form.parentId),
+  );
 
   const save = async () => {
     const title = form.title.trim();
@@ -84,7 +90,8 @@ export function TaskForm({ open, task, defaults, onClose }) {
     const data = {
       title, notes: form.notes.trim(), categoryId: form.categoryId, priority: form.priority, status: form.status,
       dueDate: form.dueDate || null, dueTime: form.dueTime || null, reminder: form.reminder,
-      phaseId: form.phaseId, topicId: form.topicId, mode: form.mode,
+      phaseId: form.phaseId, topicId: form.topicId, mode: form.mode, parentId: form.parentId || null,
+      background: !form.parentId && form.background,
     };
     return task ? actions.updateTask(task.id, data) : actions.createTask(data);
   };
@@ -92,16 +99,24 @@ export function TaskForm({ open, task, defaults, onClose }) {
   return (
     <FormModal
       open={open}
-      title={task ? 'Edit Task' : 'New Task & Reminder'}
+      title={task ? (form.parentId ? 'Edit Action' : 'Edit Task') : form.parentId ? 'New Action' : 'New Task & Reminder'}
       onClose={onClose}
       onSubmit={save}
       deleteLabel="Delete Task"
       onDelete={task && (async () => confirmDelete('this task') && (await actions.deleteTask(task.id)) && onClose())}
     >
-      <WorkspaceField value={form.mode} onChange={(mode) => set({ mode })} />
+      {!form.parentId && <WorkspaceField value={form.mode} onChange={(mode) => set({ mode, parentId: null })} />}
       <Field label="Title">
         <input autoFocus className={inputClass} value={form.title} onChange={(e) => set({ title: e.target.value })} placeholder="What needs to be done?" />
       </Field>
+      {!hasActions && (
+        <Field label="Main objective">
+          <select className={inputClass} value={form.parentId || ''} onChange={(e) => set({ parentId: e.target.value || null })}>
+            <option value="">None — a single task</option>
+            {objectives.map((t) => <option key={t.id} value={t.id}>{t.title}</option>)}
+          </select>
+        </Field>
+      )}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <Field label="Category">
           <select className={inputClass} value={form.categoryId || ''} onChange={(e) => set({ categoryId: e.target.value || null })}>
@@ -148,6 +163,20 @@ export function TaskForm({ open, task, defaults, onClose }) {
           </span>
         </span>
       </label>
+      {!form.parentId && (
+        <label className="flex items-center gap-3 p-3 rounded-xl border border-stone-200 bg-white cursor-pointer">
+          <input
+            type="checkbox"
+            className="w-4 h-4 accent-emerald-600"
+            checked={form.background}
+            onChange={(e) => set({ background: e.target.checked })}
+          />
+          <span>
+            <span className="block text-sm font-semibold text-stone-900">Background task</span>
+            <span className="block text-xs text-stone-500">Hidden from the task list unless "Show background" is ticked</span>
+          </span>
+        </label>
+      )}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <Field label="Career goal phase">
           <select className={inputClass} value={form.phaseId || ''} onChange={(e) => set({ phaseId: e.target.value || null, topicId: null })}>

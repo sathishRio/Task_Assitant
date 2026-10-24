@@ -1,5 +1,5 @@
-import { useEffect, useRef } from 'react';
-import { Bell, BriefcaseBusiness, Calendar, Check, Flag, House, Pencil, Sparkles, Trash, TriangleAlert, X } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { Bell, BriefcaseBusiness, Calendar, Check, ChevronDown, Flag, House, ListChecks, Pencil, Pin, PinOff, Plus, Sparkles, Trash, TriangleAlert, X } from 'lucide-react';
 import { useStore } from './store';
 import { MODES, phaseTone, priorityOf, toneFor, TONES } from './theme';
 import { formatDate, isOverdue, todayStr } from './dates';
@@ -313,7 +313,8 @@ export function InsightCard({ title, intro, tips }) {
 // Open modals in stacking order, so Escape closes only the top one.
 const modalStack = [];
 
-export function Modal({ open, title, onClose, footer, children, wide }) {
+// `side` slides the dialog in as a full-height panel on the right instead of centring it.
+export function Modal({ open, title, onClose, footer, children, wide, side }) {
   // Kept in a ref so a new onClose each render doesn't re-register (and re-stack) the modal.
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
@@ -333,7 +334,7 @@ export function Modal({ open, title, onClose, footer, children, wide }) {
   if (!open) return null;
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-ink/50 backdrop-blur-xs"
+      className={cx('fixed inset-0 z-50 flex bg-ink/50 backdrop-blur-xs', side ? 'justify-end' : 'items-center justify-center p-4')}
       onMouseDown={(e) => e.target === e.currentTarget && onClose()}
     >
       <div
@@ -341,8 +342,9 @@ export function Modal({ open, title, onClose, footer, children, wide }) {
         aria-modal="true"
         aria-label={title}
         className={cx(
-          'w-full bg-white rounded-2xl shadow-block border-[1.5px] border-ink overflow-hidden flex flex-col max-h-[90vh]',
-          wide ? 'max-w-2xl' : 'max-w-lg',
+          'w-full bg-white border-ink overflow-hidden flex flex-col',
+          side ? 'h-full max-w-md border-l-[1.5px] shadow-block' : 'rounded-2xl shadow-block border-[1.5px] max-h-[90vh]',
+          wide ? 'max-w-2xl' : !side && 'max-w-lg',
         )}
       >
         <div className="px-6 py-4 border-b-[1.5px] border-stone-200 bg-stone-50 flex items-center justify-between">
@@ -409,11 +411,32 @@ export function TaskRow({ task, category, onEdit }) {
   );
 }
 
-export function TaskItem({ task, category, phase, onEdit }) {
+// `subtasks` (optional) makes this a main objective: shows progress and its actions underneath,
+// with an inline box to add more. `onEditAction(task)` opens an action for editing.
+// `onOpen` (optional) is what clicking the title does, e.g. show details; it defaults to `onEdit`.
+export function TaskItem({ task, category, phase, onEdit, onOpen, subtasks, onEditAction, onOpenAction, defaultOpen }) {
   const { actions } = useStore();
   const done = task.status === 'done';
   const pr = priorityOf(task.priority);
   const topic = phase && task.topicId ? phase.topics.find((t) => t.id === task.topicId) : null;
+  const [open, setOpen] = useState(!!defaultOpen);
+  const [actionTitle, setActionTitle] = useState('');
+  const isObjective = !!subtasks?.length;
+  const actionsDone = subtasks ? subtasks.filter((t) => t.status === 'done').length : 0;
+  const deleteMessage = isObjective
+    ? `Delete "${task.title}" and its ${subtasks.length} action${subtasks.length === 1 ? '' : 's'}? This cannot be undone.`
+    : `Delete "${task.title}"? This cannot be undone.`;
+
+  const addAction = async (e) => {
+    e.preventDefault();
+    const title = actionTitle.trim();
+    if (!title) return;
+    const created = await actions.createTask({
+      title, parentId: task.id, priority: task.priority, categoryId: task.categoryId, phaseId: task.phaseId,
+      topicId: task.topicId, mode: task.mode, status: 'todo', notes: '', reminder: false, dueDate: null, dueTime: null,
+    });
+    if (created) setActionTitle('');
+  };
 
   return (
     <Card
@@ -431,33 +454,104 @@ export function TaskItem({ task, category, phase, onEdit }) {
           <div className="flex flex-wrap items-start gap-2">
             <button
               type="button"
-              onClick={onEdit}
+              onClick={onOpen || onEdit}
               className={cx('text-sm font-semibold text-left text-ink hover:text-zone-blue', done && 'line-through text-stone-400')}
             >
               {task.title}
             </button>
+            {task.pinned && <Pin className="w-3.5 h-3.5 mt-0.5 shrink-0 text-ink fill-taxi" aria-label="Pinned" />}
+            {isObjective && <Badge tone={TONES.blue} icon={ListChecks} upper>Objective</Badge>}
+            {task.background && <Badge upper>Background</Badge>}
             {!done && <Badge tone={pr.tone} upper>{pr.label}</Badge>}
+            {category && <Badge tone={toneFor(category.color)}>{category.name}</Badge>}
           </div>
-          {(category || phase || task.status === 'in_progress') && (
+          {(phase || task.status === 'in_progress') && (
             <div className="flex flex-wrap gap-1.5 mt-2">
-              {category && <Badge tone={toneFor(category.color)}>{category.name}</Badge>}
               {task.status === 'in_progress' && <Badge tone={TONES.emerald}>In progress</Badge>}
               {phase && <Badge tone={phaseTone(phase)} icon={Flag}>{topic ? topic.title : phase.title}</Badge>}
             </div>
           )}
           {task.dueDate && <div className="mt-2"><DueLabel task={task} done={done} /></div>}
           {task.notes && <p className="text-xs text-stone-500 mt-2 line-clamp-2">{task.notes}</p>}
+          {isObjective && (
+            <button
+              type="button"
+              onClick={() => setOpen((o) => !o)}
+              aria-expanded={open}
+              className="mt-3 w-full flex items-center gap-3 text-left"
+            >
+              <span className="flex-1">
+                <ProgressBar thin percent={subtasks.length ? Math.round((actionsDone / subtasks.length) * 100) : 0} />
+              </span>
+              <span className="font-mono text-[11px] font-semibold text-stone-500 whitespace-nowrap">
+                {actionsDone}/{subtasks.length} actions
+              </span>
+              <ChevronDown className={cx('w-4 h-4 text-stone-500 transition', open && 'rotate-180')} />
+            </button>
+          )}
         </div>
         <div className="flex gap-0.5 sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100 transition">
+          <IconButton
+            icon={task.pinned ? PinOff : Pin}
+            label={task.pinned ? 'Unpin task' : 'Pin task'}
+            onClick={() => actions.updateTask(task.id, { pinned: !task.pinned })}
+          />
+          {subtasks && !isObjective && <IconButton icon={ListChecks} label="Break into actions" onClick={() => setOpen((o) => !o)} />}
           <IconButton icon={Pencil} label="Edit task" onClick={onEdit} />
           <IconButton
             icon={Trash}
             label="Delete task"
             className="hover:text-rose-600 hover:bg-rose-50"
-            onClick={() => window.confirm(`Delete "${task.title}"? This cannot be undone.`) && actions.deleteTask(task.id)}
+            onClick={() => window.confirm(deleteMessage) && actions.deleteTask(task.id)}
           />
         </div>
       </div>
+      {subtasks && open && (
+        <div className="mt-3 ml-8 pl-3 border-l-2 border-stone-200 space-y-1">
+          {subtasks.map((a) => (
+            <ActionRow key={a.id} task={a} onEdit={() => onEditAction?.(a)} onOpen={onOpenAction && (() => onOpenAction(a))} />
+          ))}
+          <form onSubmit={addAction} className="flex gap-2 pt-1">
+            <input
+              className={cx(inputClass, 'py-1.5! text-xs!')}
+              value={actionTitle}
+              onChange={(e) => setActionTitle(e.target.value)}
+              placeholder="Add an action… (press Enter)"
+              aria-label={`Add an action to "${task.title}"`}
+            />
+            <IconButton icon={Plus} label="Add action" type="submit" disabled={!actionTitle.trim()} />
+          </form>
+        </div>
+      )}
     </Card>
+  );
+}
+
+// One action inside an objective: checkbox, title, due date, and edit / delete on hover.
+function ActionRow({ task, onEdit, onOpen }) {
+  const { actions } = useStore();
+  const done = task.status === 'done';
+  return (
+    <div className="group/action flex items-center gap-2.5 py-1">
+      <Checkbox checked={done} onChange={() => actions.toggleTask(task)} label={`Mark "${task.title}" done`} />
+      <button
+        type="button"
+        onClick={onOpen || onEdit}
+        className={cx('flex-1 min-w-0 truncate text-left text-xs font-medium text-ink hover:text-zone-blue', done && 'line-through text-stone-400')}
+      >
+        {task.title}
+      </button>
+      {task.status === 'in_progress' && <Badge tone={TONES.emerald}>In progress</Badge>}
+      {task.dueDate && <DueLabel task={task} done={done} />}
+      <span className="flex sm:opacity-0 sm:group-hover/action:opacity-100 sm:focus-within:opacity-100 transition">
+        <IconButton icon={Pencil} label="Edit action" onClick={onEdit} />
+        <IconButton
+          icon={Trash}
+          label="Delete action"
+          className="hover:text-rose-600 hover:bg-rose-50"
+          onClick={() => window.confirm(`Delete "${task.title}"? This cannot be undone.`) && actions.deleteTask(task.id)}
+        />
+      </span>
+    </div>
   );
 }

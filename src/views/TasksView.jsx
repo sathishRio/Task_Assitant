@@ -5,6 +5,7 @@ import { MODES, PRIORITIES, modeOf, priorityOf } from '../theme';
 import { isOverdue, todayStr } from '../dates';
 import { Button, Card, EmptyState, InsightCard, MetricCard, ModeSwitch, PageHero, TaskItem, cx, inputClass, selectClass } from '../ui';
 import { TaskForm } from '../forms';
+import TaskDetails from './TaskDetails';
 
 const TABS = [
   { key: 'open', label: 'All Tasks', test: (t) => t.status !== 'done' },
@@ -33,6 +34,8 @@ const sortTasks = (sort) => (a, b) => {
   const doneA = a.status === 'done' ? 1 : 0;
   const doneB = b.status === 'done' ? 1 : 0;
   if (doneA !== doneB) return doneA - doneB;
+  // Pinned open tasks come first.
+  if (!doneA && !!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
   if (doneA && sort === 'due') return (b.completedAt || '').localeCompare(a.completedAt || '');
   return comparators[sort](a, b);
 };
@@ -60,6 +63,8 @@ export default function TasksView({ preset }) {
   const [priority, setPriority] = useState('all');
   const [phaseId, setPhaseId] = useState('all');
   const [sort, setSort] = useState('due');
+  const [showBackground, setShowBackground] = useState(false);
+  const [viewingId, setViewingId] = useState(null); // task shown in the right-hand details panel
   const [editing, setEditing] = useState(null); // task | 'new' | { title } (reminder from quick add) | null
   const [quickTitle, setQuickTitle] = useState('');
   const [quickPriority, setQuickPriority] = useState('medium');
@@ -80,22 +85,38 @@ export default function TasksView({ preset }) {
     }
   }, [preset]);
 
-  const counts = useMemo(() => Object.fromEntries(TABS.map((t) => [t.key, tasks.filter(t.test).length])), [tasks]);
+  // Actions are listed under their main objective rather than as rows of their own.
+  const actionsOf = useMemo(() => {
+    const map = {};
+    tasks.forEach((t) => t.parentId && (map[t.parentId] ||= []).push(t));
+    Object.values(map).forEach((list) => list.sort(sortTasks('due')));
+    return map;
+  }, [tasks]);
+  // Background tasks stay out of the list until "Show background" is ticked.
+  const roots = useMemo(() => tasks.filter((t) => !t.parentId && (showBackground || !t.background)), [tasks, showBackground]);
+  // A row shows when the task, or any of its actions, passes the test.
+  const rowMatches = (test) => (t) => test(t) || (actionsOf[t.id] || []).some(test);
+
+  const counts = useMemo(
+    () => Object.fromEntries(TABS.map((t) => [t.key, roots.filter(rowMatches(t.test)).length])),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [roots, actionsOf],
+  );
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     const inTab = TABS.find((t) => t.key === tab).test;
-    return tasks
-      .filter((t) => {
-        if (!inTab(t)) return false;
-        if (categoryId === 'none' ? t.categoryId : categoryId !== 'all' && t.categoryId !== categoryId) return false;
-        if (priority !== 'all' && t.priority !== priority) return false;
-        if (phaseId !== 'all' && t.phaseId !== phaseId) return false;
-        if (q && !`${t.title} ${t.notes}`.toLowerCase().includes(q)) return false;
-        return true;
-      })
-      .sort(sortTasks(sort));
-  }, [tasks, query, tab, categoryId, priority, phaseId, sort]);
+    const matches = (t) => {
+      if (!inTab(t)) return false;
+      if (categoryId === 'none' ? t.categoryId : categoryId !== 'all' && t.categoryId !== categoryId) return false;
+      if (priority !== 'all' && t.priority !== priority) return false;
+      if (phaseId !== 'all' && t.phaseId !== phaseId) return false;
+      if (q && !`${t.title} ${t.notes}`.toLowerCase().includes(q)) return false;
+      return true;
+    };
+    return roots.filter(rowMatches(matches)).sort(sortTasks(sort));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roots, actionsOf, query, tab, categoryId, priority, phaseId, sort]);
 
   const catById = (id) => categories.find((c) => c.id === id);
   const phaseById = (id) => phases.find((p) => p.id === id);
@@ -224,6 +245,10 @@ export default function TasksView({ preset }) {
             <option value="all">All Goals</option>
             {phases.map((p) => <option key={p.id} value={p.id}>{p.order}. {p.title}</option>)}
           </select>
+          <label className="inline-flex items-center gap-1.5 text-xs font-semibold text-stone-600 cursor-pointer">
+            <input type="checkbox" className="w-4 h-4 accent-emerald-600" checked={showBackground} onChange={(e) => setShowBackground(e.target.checked)} />
+            Show background
+          </label>
           <span className="inline-flex items-center gap-1.5 sm:ml-auto text-[11px] font-semibold text-stone-400 uppercase tracking-wider">
             <ArrowUpDown className="w-3.5 h-3.5" /> Sort:
             <select className={selectClass} value={sort} onChange={(e) => setSort(e.target.value)} aria-label="Sort tasks">
@@ -235,7 +260,17 @@ export default function TasksView({ preset }) {
 
       <div className="space-y-2.5">
         {filtered.map((t) => (
-          <TaskItem key={t.id} task={t} category={catById(t.categoryId)} phase={phaseById(t.phaseId)} onEdit={() => setEditing(t)} />
+          <TaskItem
+            key={t.id}
+            task={t}
+            category={catById(t.categoryId)}
+            phase={phaseById(t.phaseId)}
+            onEdit={() => setEditing(t)}
+            onOpen={() => setViewingId(t.id)}
+            subtasks={actionsOf[t.id] || []}
+            onEditAction={setEditing}
+            onOpenAction={(a) => setViewingId(a.id)}
+          />
         ))}
         {filtered.length === 0 && (
           <EmptyState
@@ -250,6 +285,8 @@ export default function TasksView({ preset }) {
         intro="Habits create recurring neurological momentum, while tasks achieve concrete project outcomes. Linking high-priority tasks to your daily routine eliminates task paralysis and builds compounding productivity."
         tips={TIPS}
       />
+
+      {viewingId && <TaskDetails taskId={viewingId} onOpen={setViewingId} onEdit={setEditing} onClose={() => setViewingId(null)} />}
 
       <TaskForm
         open={!!editing}

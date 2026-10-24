@@ -50,6 +50,8 @@ function reducer(state, action) {
     }
     case 'REMOVE':
       return { ...state, [action.key]: state[action.key].filter((x) => x.id !== action.id) };
+    case 'REMOVE_TASKS':
+      return { ...state, tasks: state.tasks.filter((t) => !action.ids.has(t.id)) };
     case 'PATCH_TASKS':
       // Mirror server-side cascades (e.g. deleting a category un-links its tasks).
       return { ...state, tasks: state.tasks.map((t) => (action.match(t) ? { ...t, ...action.patch } : t)) };
@@ -107,6 +109,13 @@ export function StoreProvider({ children }) {
       if (item) dispatch({ type: 'UPSERT', key, item });
       return item;
     };
+    // Task responses also carry any objectives whose status the server changed as a result.
+    const upsertTask = (res) => {
+      if (!res) return res;
+      const { objectives = [], ...task } = res;
+      [task, ...objectives].forEach(upsert('tasks'));
+      return task;
+    };
     const remove = (key, call, cascade) => async (id) => {
       const ok = await attempt(() => call(id).then(() => true));
       if (!ok) return false;
@@ -146,13 +155,18 @@ export function StoreProvider({ children }) {
         dispatch({ type: 'SIGNED_OUT' });
       },
 
-      createTask: (data) => attempt(() => api.createTask(data)).then(upsert('tasks')),
-      updateTask: (id, data) => attempt(() => api.updateTask(id, data)).then(upsert('tasks')),
+      createTask: (data) => attempt(() => api.createTask(data)).then(upsertTask),
+      updateTask: (id, data) => attempt(() => api.updateTask(id, data)).then(upsertTask),
       toggleTask: (task) => self.updateTask(task.id, { status: task.status === 'done' ? 'todo' : 'done' }),
+      // Deleting an objective deletes its actions too; the server returns every removed id.
       deleteTask: async (id) => {
-        if (!(await remove('tasks', api.deleteTask)(id))) return false;
-        // The server un-links sticky notes from a deleted task; mirror that here.
-        dispatch({ type: 'SET_NOTES', match: (n) => n.taskId === id, patch: { taskId: null } });
+        const result = await attempt(() => api.deleteTask(id));
+        if (!result) return false;
+        const removed = new Set(result.removedIds);
+        dispatch({ type: 'REMOVE_TASKS', ids: removed });
+        result.objectives.forEach(upsert('tasks'));
+        // The server un-links sticky notes from deleted tasks; mirror that here.
+        dispatch({ type: 'SET_NOTES', match: (n) => removed.has(n.taskId), patch: { taskId: null } });
         return true;
       },
 
