@@ -12,24 +12,28 @@ const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', '
 
 const greeting = (h) => (h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening');
 
-// Coloured headers that make the day's key panels stand out from the rest.
-const ACCENTS = {
-  taxi: { head: 'bg-taxi border-ink', body: 'border-l-[6px] border-l-taxi', chip: 'bg-ink text-taxi' },
-  blue: { head: 'bg-zone-blue text-white border-ink', body: 'border-l-[6px] border-l-zone-blue', chip: 'bg-white text-zone-blue' },
+// Soft tints for highlighted panels: card background, then the count chip.
+const TINTS = {
+  yellow: ['bg-taxi-soft!', 'bg-ink text-taxi'],
+  blue: ['bg-[#e9eeff]!', 'bg-zone-blue text-white'],
+  green: ['bg-[#e3f5ec]!', 'bg-zone-green text-white'],
+  violet: ['bg-[#efebff]!', 'bg-zone-violet text-white'],
+  orange: ['bg-[#ffeedf]!', 'bg-zone-orange text-white'],
 };
 
-// Panel with a title row and a count chip, as on devobj.com. `accent` (taxi | blue) highlights it.
-function Panel({ title, count, children, className, accent, icon: Icon }) {
-  const a = ACCENTS[accent];
+// Panel with a title row and a count chip, as on devobj.com. `highlight` (a TINTS key)
+// tints the whole panel, like the roadmap's "Now" row, for the day's key panels.
+function Panel({ title, count, children, className, highlight, icon: Icon }) {
+  const tint = TINTS[highlight];
   return (
-    <Card block className={cx('overflow-hidden', a?.body, className)}>
-      <div className={cx('flex items-center justify-between gap-3 px-4 py-3 border-b-[1.5px]', a ? a.head : 'border-stone-200')}>
-        <h2 className={cx('flex items-center gap-2 text-lg font-bold', a ? '' : 'text-ink')}>
+    <Card block className={cx('overflow-hidden', tint?.[0], className)}>
+      <div className="flex items-center justify-between gap-3 px-4 py-3 border-b-[1.5px] border-stone-200">
+        <h2 className="flex items-center gap-2 text-lg font-bold text-ink">
           {Icon && <Icon className="w-5 h-5" />}
           {title}
         </h2>
         {count !== undefined && (
-          <span className={cx('font-mono text-[11px] font-semibold rounded-md px-2 py-0.5', a ? a.chip : 'bg-stone-100 text-stone-700')}>{count}</span>
+          <span className={cx('font-mono text-[11px] font-semibold rounded-md px-2 py-0.5', tint ? tint[1] : 'bg-stone-100 text-stone-700')}>{count}</span>
         )}
       </div>
       {children}
@@ -232,7 +236,7 @@ export default function HomeView({ navigate }) {
         </div>
         <div className="space-y-5 min-w-0">
           {/* Focus today */}
-          <Panel title="Focus today" count={focus.length} accent="taxi" icon={Target}>
+          <Panel title="Focus today" count={focus.length} highlight="green" icon={Target}>
             {focus.length ? (
               <div className="divide-y divide-stone-200">{focus.map(row)}</div>
             ) : (
@@ -244,7 +248,7 @@ export default function HomeView({ navigate }) {
 
           {/* Coming up */}
           {upcoming.length > 0 && (
-            <Panel title="Coming up" count={upcoming.length} accent="blue" icon={CalendarClock}>
+            <Panel title="Coming up" count={upcoming.length} highlight="yellow" icon={CalendarClock}>
               <div className="divide-y divide-stone-200">{upcoming.map(row)}</div>
               <button
                 type="button"
