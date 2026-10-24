@@ -19,6 +19,7 @@ const TINTS = {
   green: ['bg-[#e3f5ec]!', 'bg-zone-green text-white'],
   violet: ['bg-[#efebff]!', 'bg-zone-violet text-white'],
   orange: ['bg-[#ffeedf]!', 'bg-zone-orange text-white'],
+  red: ['bg-rose-50!', 'bg-rose-600 text-white'],
 };
 
 // Panel with a title row and a count chip, as on devobj.com. `highlight` (a TINTS key)
@@ -248,7 +249,7 @@ export default function HomeView({ navigate }) {
 
           {/* Coming up */}
           {upcoming.length > 0 && (
-            <Panel title="Coming up" count={upcoming.length} highlight="yellow" icon={CalendarClock}>
+            <Panel title="Coming up" count={upcoming.length} highlight="red" icon={CalendarClock}>
               <div className="divide-y divide-stone-200">{upcoming.map(row)}</div>
               <button
                 type="button"
