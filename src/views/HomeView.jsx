@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { CircleCheck, Plus, Search } from 'lucide-react';
+import { CalendarClock, CircleCheck, Plus, Search, Target } from 'lucide-react';
 import { currentPhase, overallProgress, phaseProgress, useStore } from '../store';
 import { CERT_STATUSES, phaseTone } from '../theme';
 import { isOverdue, startOfWeek, todayStr } from '../dates';
@@ -12,14 +12,24 @@ const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', '
 
 const greeting = (h) => (h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening');
 
-// Panel with a title row and a count chip, as on devobj.com.
-function Panel({ title, count, children, className }) {
+// Coloured headers that make the day's key panels stand out from the rest.
+const ACCENTS = {
+  taxi: { head: 'bg-taxi border-ink', body: 'border-l-[6px] border-l-taxi', chip: 'bg-ink text-taxi' },
+  blue: { head: 'bg-zone-blue text-white border-ink', body: 'border-l-[6px] border-l-zone-blue', chip: 'bg-white text-zone-blue' },
+};
+
+// Panel with a title row and a count chip, as on devobj.com. `accent` (taxi | blue) highlights it.
+function Panel({ title, count, children, className, accent, icon: Icon }) {
+  const a = ACCENTS[accent];
   return (
-    <Card block className={cx('overflow-hidden', className)}>
-      <div className="flex items-center justify-between gap-3 px-4 py-3 border-b-[1.5px] border-stone-200">
-        <h2 className="text-lg font-bold text-ink">{title}</h2>
+    <Card block className={cx('overflow-hidden', a?.body, className)}>
+      <div className={cx('flex items-center justify-between gap-3 px-4 py-3 border-b-[1.5px]', a ? a.head : 'border-stone-200')}>
+        <h2 className={cx('flex items-center gap-2 text-lg font-bold', a ? '' : 'text-ink')}>
+          {Icon && <Icon className="w-5 h-5" />}
+          {title}
+        </h2>
         {count !== undefined && (
-          <span className="font-mono text-[11px] font-semibold bg-stone-100 text-stone-700 rounded-md px-2 py-0.5">{count}</span>
+          <span className={cx('font-mono text-[11px] font-semibold rounded-md px-2 py-0.5', a ? a.chip : 'bg-stone-100 text-stone-700')}>{count}</span>
         )}
       </div>
       {children}
@@ -222,7 +232,7 @@ export default function HomeView({ navigate }) {
         </div>
         <div className="space-y-5 min-w-0">
           {/* Focus today */}
-          <Panel title="Focus today" count={focus.length}>
+          <Panel title="Focus today" count={focus.length} accent="taxi" icon={Target}>
             {focus.length ? (
               <div className="divide-y divide-stone-200">{focus.map(row)}</div>
             ) : (
@@ -234,7 +244,7 @@ export default function HomeView({ navigate }) {
 
           {/* Coming up */}
           {upcoming.length > 0 && (
-            <Panel title="Coming up" count={upcoming.length}>
+            <Panel title="Coming up" count={upcoming.length} accent="blue" icon={CalendarClock}>
               <div className="divide-y divide-stone-200">{upcoming.map(row)}</div>
               <button
                 type="button"
