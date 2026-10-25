@@ -70,6 +70,16 @@ export const vaultApi = {
   reveal: (unlock, id) => request('POST', `/vault/entries/${id}/reveal`, {}, withUnlock(unlock)),
 };
 
+// Wealth management (web only). `collection` is assets | liabilities | debts | entries | budgets | goals.
+export const wealthApi = {
+  load: () => request('GET', '/wealth'),
+  saveSettings: (data) => request('PUT', '/wealth/settings', data),
+  saveSnapshot: (month, data) => request('PUT', `/wealth/snapshots/${month}`, data),
+  create: (collection, data) => request('POST', `/wealth/${collection}`, data),
+  update: (collection, id, data) => request('PUT', `/wealth/${collection}/${id}`, data),
+  remove: (collection, id) => request('DELETE', `/wealth/${collection}/${id}`),
+};
+
 export const api = {
   authConfig: () => request('GET', '/auth/config'),
   signIn: (idToken) => request('POST', '/auth/google', { idToken }),

@@ -5,7 +5,7 @@ import { CATEGORY_COLORS, CERT_STATUSES, NOTE_COLORS, PRIORITIES, STATUSES, mode
 import { Button, Field, ModeSwitch, Modal, cx, inputClass } from './ui';
 
 // Shared shell: modal + form + Cancel/Save footer, with an optional Delete on the left.
-function FormModal({ open, title, onClose, onSubmit, onDelete, deleteLabel, children, wide }) {
+export function FormModal({ open, title, onClose, onSubmit, onDelete, deleteLabel, children, wide }) {
   const formId = useId();
   const [saving, setSaving] = useState(false);
 

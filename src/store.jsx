@@ -126,6 +126,8 @@ export function StoreProvider({ children }) {
 
     const self = {
       reload: load,
+      // For views that keep their own data (Wealth): same error toast and sign-out handling.
+      run: attempt,
       dismissToast: () => dispatch({ type: 'TOAST', message: null }),
       setMode: (mode) => {
         try {

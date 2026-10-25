@@ -11,9 +11,11 @@ import CareerView from './views/CareerView';
 import CategoriesView from './views/CategoriesView';
 import VaultView from './views/VaultView';
 import StickyView from './views/StickyView';
+import WealthView from './views/wealth/WealthView';
 
 // `zone` = the DevOBJ zone colour shown as a small square beside each section.
-// `inMenu` views live in the account dropdown instead of the header nav.
+// `inMenu` views live in the account dropdown instead of the header nav; `hidden` views are
+// reachable only by their URL (e.g. #/wealth).
 const VIEWS = [
   { key: 'home', label: 'Home', Icon: House, zone: 'bg-ink' },
   { key: 'tasks', label: 'Tasks', Icon: ListChecks, zone: 'bg-zone-blue' },
@@ -21,16 +23,20 @@ const VIEWS = [
   { key: 'sticky', label: 'Notes', Icon: StickyNote, zone: 'bg-zone-mag' }, // #/sticky: linked from the DevOBJ island
   { key: 'categories', label: 'Categories', Icon: Tags, zone: 'bg-zone-orange', inMenu: true },
   { key: 'vault', label: 'Vault', Icon: KeyRound, zone: 'bg-zone-violet' }, // web only
+  { key: 'wealth', label: 'Wealth', hidden: true }, // web only, #/wealth
+  { key: 'office', label: 'Office Tasks', hidden: true }, // #/office: Office tasks only, no header/footer
 ];
 
 // The DevOBJ town map this app is reached from (its private island); the header links back to it.
 const TOWN_MAP_URL = `${(import.meta.env.VITE_DEVOBJ_URL || 'http://localhost:3000').replace(/\/$/, '')}/#town`;
 
 // Hash routing (#/tasks) so links and refresh work without server-side routes.
-const NAV_VIEWS = VIEWS.filter((v) => !v.inMenu);
-const MENU_VIEWS = VIEWS.filter((v) => v.inMenu);
+const NAV_VIEWS = VIEWS.filter((v) => !v.inMenu && !v.hidden);
+const MENU_VIEWS = VIEWS.filter((v) => v.inMenu && !v.hidden);
 
 const viewFromHash = () => {
+  // /office (a real path, served by the index.html fallback) is the standalone Office page.
+  if (/^\/office\/?$/.test(window.location.pathname)) return 'office';
   const key = window.location.hash.replace(/^#\/?/, '');
   return VIEWS.some((v) => v.key === key) ? key : 'home';
 };
@@ -198,7 +204,8 @@ const loadGoogleScript = () =>
     document.head.appendChild(s);
   }));
 
-function SignIn() {
+// `popup` shows the sign-in card as a modal over a blank backdrop (used by the standalone #/office page).
+function SignIn({ popup = false }) {
   const { state, actions } = useStore();
   const buttonRef = useRef(null);
   const [error, setError] = useState(state.error);
@@ -251,7 +258,11 @@ function SignIn() {
   }, [actions]);
 
   return (
-    <div className="min-h-screen flex items-center justify-center p-4 bg-paper">
+    <div
+      role={popup ? 'dialog' : undefined}
+      aria-modal={popup || undefined}
+      className={popup ? 'fixed inset-0 z-50 flex items-center justify-center p-4 bg-ink/40 backdrop-blur-sm' : 'min-h-screen flex items-center justify-center p-4 bg-paper'}
+    >
       <div className="w-full max-w-sm">
         <div className="flex items-center justify-center mb-6">
           <Brand large />
@@ -330,7 +341,8 @@ function Shell() {
     window.scrollTo({ top: 0 });
   }, []);
 
-  if (state.status === 'auth') return <SignIn />;
+  const standalone = view === 'office';
+  if (state.status === 'auth') return <SignIn popup={standalone} />;
 
   let body;
   if (state.status === 'error' && !state.profile) {
@@ -356,7 +368,18 @@ function Shell() {
         {view === 'categories' && <CategoriesView navigate={navigate} />}
         {view === 'vault' && <VaultView />}
         {view === 'sticky' && <StickyView />}
+        {view === 'wealth' && <WealthView />}
+        {view === 'office' && <TasksView preset={taskPreset} fixedMode="office" />}
       </>
+    );
+  }
+
+  if (standalone) {
+    return (
+      <div className="min-h-screen flex flex-col">
+        <main className="flex-1 w-full max-w-6xl mx-auto px-4 sm:px-6 py-6 sm:py-8">{body}</main>
+        <Toast />
+      </div>
     );
   }
 

@@ -47,9 +47,11 @@ const TIPS = [
 ];
 
 // `preset` lets other views open this list pre-filtered, e.g. { categoryId } from Categories.
-export default function TasksView({ preset }) {
+// `fixedMode` pins the workspace (e.g. 'office' for the standalone #/office page) and hides the switch.
+export default function TasksView({ preset, fixedMode }) {
   const { state, actions } = useStore();
-  const { categories, phases, mode } = state;
+  const { categories, phases } = state;
+  const mode = fixedMode || state.mode;
   // Everything below works on the active workspace (Office or Personal) only.
   const tasks = useMemo(() => state.tasks.filter((t) => modeOf(t) === mode), [state.tasks, mode]);
   const modeCounts = useMemo(
@@ -154,7 +156,7 @@ export default function TasksView({ preset }) {
         description="Organize daily commitments, track execution momentum, and stay on schedule with timely reminders."
         actions={
           <div className="flex flex-col items-start sm:items-end gap-2">
-            <ModeSwitch value={mode} onChange={actions.setMode} counts={modeCounts} />
+            {!fixedMode && <ModeSwitch value={mode} onChange={actions.setMode} counts={modeCounts} />}
             <Button icon={Plus} onClick={() => setEditing('new')}>New Task & Reminder</Button>
           </div>
         }
