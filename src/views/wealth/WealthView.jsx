@@ -168,6 +168,24 @@ function useWealth() {
     }
   }, []);
 
+  // Live gold rate: refreshed every minute while the page is open (quietly, never asks for the PIN).
+  const refreshGold = useCallback(async () => {
+    const session = getVaultSession();
+    if (!session) return null;
+    try {
+      const goldPrice = await wealthApi.goldPrice(session.token);
+      if (goldPrice) setData((d) => d && { ...d, goldPrice });
+      return goldPrice;
+    } catch {
+      return null;
+    }
+  }, []);
+  useEffect(() => {
+    if (state !== 'ready') return undefined;
+    const t = setInterval(refreshGold, 60 * 1000);
+    return () => clearInterval(t);
+  }, [state, refreshGold]);
+
   const answer = (ok) => {
     prompt?.resolve(ok);
     setPrompt(null);
@@ -188,7 +206,7 @@ function useWealth() {
   const call = (fn) => saving(fn);
   const raw = (fn) => withUnlock('Enter your PIN to continue.', fn);
 
-  return { data, failed, state, prompt, answer, load, create, update, remove, saveSettings, saveSnapshot, merge, call, raw, lock: lockVault };
+  return { data, failed, state, prompt, answer, load, create, update, remove, saveSettings, saveSnapshot, refreshGold, merge, call, raw, lock: lockVault };
 }
 
 /* ---------- Page ---------- */
@@ -837,6 +855,9 @@ function Assets({ w, data, base, rates, currencies, money, t }) {
         record={ed.record}
         currencies={currencies}
         defaultCurrency={base}
+        goldPrice={w.data.goldPrice}
+        rates={w.data.settings.rates}
+        refreshGold={w.refreshGold}
         onSave={ed.record ? w.update('assets', ed.record.id) : w.create('assets')}
         onDelete={ed.record && w.remove('assets', ed.record.id)}
         onClose={ed.close}

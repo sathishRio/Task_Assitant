@@ -158,7 +158,15 @@ export function fdMaturity(asset) {
 
 // Value today, in the asset's own currency.
 // `balance` is set by withBalances for bank accounts that track their balance automatically.
-export const assetValue = (asset) => (isFd(asset) ? fdValueOn(asset, todayStr()) : asset.balance ?? asset.currentValue);
+// Real estate: `currentValue` is the property's value before contributions, so money added
+// (e.g. renovation, extra payments) raises the value (plus its growth %) and withdrawals lower it.
+// A contribution with a growth % adds amount × (1 + %/100), e.g. a renovation that raised the value by more than it cost.
+export const netFlows = (asset) =>
+  (asset.flows || []).reduce((t, f) => t + (f.kind === 'withdrawal' ? -(f.amount || 0) : (f.amount || 0) * (1 + (f.growth || 0) / 100)), 0);
+export const assetValue = (asset) =>
+  isFd(asset)
+    ? fdValueOn(asset, todayStr())
+    : asset.balance ?? (asset.type === 'real_estate' ? Math.max(0, asset.currentValue + netFlows(asset)) : asset.currentValue);
 
 // Gold with grams recorded is valued at the live market rate: grams × 24K price per gram × purity
 // (22K = 22/24). Falls back to the hand-entered current value when the price is unavailable.

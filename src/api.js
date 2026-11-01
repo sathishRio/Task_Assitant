@@ -78,6 +78,7 @@ export const vaultApi = {
 // Stored encrypted with the vault key, so every call needs the vault unlock token (423 when locked).
 export const wealthApi = {
   load: (unlock) => request('GET', '/wealth', undefined, withUnlock(unlock)),
+  goldPrice: (unlock) => request('GET', '/wealth/gold-price', undefined, withUnlock(unlock)),
   saveSettings: (unlock, data) => request('PUT', '/wealth/settings', data, withUnlock(unlock)),
   saveSnapshot: (unlock, month, data) => request('PUT', `/wealth/snapshots/${month}`, data, withUnlock(unlock)),
   create: (unlock, collection, data) => request('POST', `/wealth/${collection}`, data, withUnlock(unlock)),

@@ -5,7 +5,7 @@ import { todayStr } from '../../dates';
 import { Button, Field, IconButton, cx, inputClass } from '../../ui';
 import {
   ASSET_TYPES, COMPOUNDING, GOAL_TYPES, LIABILITY_TYPES,
-  FREQUENCIES, debtStatus, fdMaturity, fixedAmount, formatMoney, isFd, loanPlan, formatDay, thisMonth,
+  FREQUENCIES, GOLD_PURITY, convert, netFlows, debtStatus, fdMaturity, fixedAmount, formatMoney, isFd, loanPlan, formatDay, thisMonth,
 } from './calc';
 
 // Add / edit forms for the Wealth page. Each takes `record` (null = new), `defaults`, and
@@ -119,7 +119,7 @@ const Calc = ({ children }) => (
 
 /* ---------- Asset ---------- */
 
-export function AssetForm({ open, record, currencies, defaultCurrency, onSave, onDelete, onClose }) {
+export function AssetForm({ open, record, currencies, defaultCurrency, goldPrice, rates, refreshGold, onSave, onDelete, onClose }) {
   const empty = {
     name: '', type: 'bank', currency: defaultCurrency, principal: '', currentValue: '', interestRate: '',
     compounding: 'quarterly', startDate: '', maturityDate: '', flows: [], grams: '', purity: '24K', reserved: false, reservedAmount: '', holdAmount: '', balanceMonth: '', openingDate: '', notes: '',
@@ -128,6 +128,22 @@ export function AssetForm({ open, record, currencies, defaultCurrency, onSave, o
   const fd = isFd(form);
   const hasGrams = form.type === 'gold' || form.type === 'other';
   const totalGrams = num(form.grams) + form.flows.reduce((t, f) => t + (f.kind === 'withdrawal' ? -1 : 1) * num(f.grams), 0);
+  // Gold: live rate per gram for the chosen purity, in the asset's currency; value = total grams × rate.
+  const gold = form.type === 'gold';
+  const realEstate = form.type === 'real_estate';
+  const [livePrice, setLivePrice] = useState(goldPrice);
+  useEffect(() => setLivePrice(goldPrice), [goldPrice]);
+  useEffect(() => {
+    if (!open || !gold || !refreshGold) return undefined;
+    refreshGold().then((p) => p && setLivePrice(p));
+    const t = setInterval(() => refreshGold().then((p) => p && setLivePrice(p)), 60 * 1000);
+    return () => clearInterval(t);
+  }, [open, gold, refreshGold]);
+  const ratePerGram = gold && livePrice?.aedPerGram24
+    ? convert(livePrice.aedPerGram24 * (GOLD_PURITY[form.purity] ?? 1), 'AED', form.currency, rates)
+    : null;
+  const goldAuto = gold && ratePerGram > 0 && totalGrams > 0;
+  const goldValue = goldAuto ? totalGrams * ratePerGram : null;
   const hasRate = fd || form.type === 'bank' || form.type === 'other';
   const preview = fd && { ...form, principal: num(form.principal), interestRate: num(form.interestRate) };
   const maturity = preview && fdMaturity(preview);
@@ -149,12 +165,12 @@ export function AssetForm({ open, record, currencies, defaultCurrency, onSave, o
       principal: num(form.principal),
       grams: hasGrams ? num(form.grams) : 0,
       purity: form.purity || '24K',
-      currentValue: fd ? 0 : num(form.currentValue),
+      currentValue: fd ? 0 : goldAuto ? Math.round(goldValue * 100) / 100 : num(form.currentValue),
       interestRate: num(form.interestRate),
       compounding: form.compounding,
       startDate: form.startDate || null,
       maturityDate: form.maturityDate || null,
-      flows: form.flows.map(({ date, kind, amount, grams, note }) => ({ date, kind, amount: num(amount), grams: hasGrams ? num(grams) : 0, note: note || '' })),
+      flows: form.flows.map(({ date, kind, amount, grams, growth, note }) => ({ date, kind, amount: num(amount), grams: hasGrams ? num(grams) : 0, growth: realEstate && kind === 'contribution' ? Number(growth) || 0 : 0, note: note || '' })),
     });
   };
 
@@ -177,9 +193,9 @@ export function AssetForm({ open, record, currencies, defaultCurrency, onSave, o
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
         <CurrencySelect value={form.currency} onChange={(currency) => set({ currency })} currencies={currencies} />
         <Money label={fd ? 'Deposit amount' : 'Amount put in'} value={form.principal} onChange={(principal) => set({ principal })} />
-        {!fd && (
+        {!fd && !goldAuto && (
           <Money
-            label={form.type === 'bank' ? 'Opening balance' : form.type === 'gold' ? 'Current value (if no live rate)' : 'Current value'}
+            label={form.type === 'bank' ? 'Opening balance' : form.type === 'gold' ? 'Current value (if no live rate)' : form.type === 'real_estate' ? 'Property value (before contributions)' : 'Current value'}
             value={form.currentValue}
             onChange={(currentValue) => set({ currentValue })}
           />
@@ -187,9 +203,46 @@ export function AssetForm({ open, record, currencies, defaultCurrency, onSave, o
         {form.type === 'gold' && (
           <Select label="Purity" value={form.purity || '24K'} onChange={(purity) => set({ purity })} options={[{ key: '24K', label: '24K' }, { key: '22K', label: '22K' }]} />
         )}
-        {hasGrams && <Money label="Grams bought" step="0.001" value={form.grams ?? ''} onChange={(grams) => set({ grams })} suffix="g" />}
+        {hasGrams && <Money label="Grams (first purchase)" step="0.001" value={form.grams ?? ''} onChange={(grams) => set({ grams })} suffix="g" />}
+        {hasGrams && (
+          <Field label="Total grams">
+            <div className={cx(inputClass, 'bg-stone-50 font-semibold text-ink tabular-nums')} aria-live="polite">
+              {+totalGrams.toFixed(3)} g
+            </div>
+          </Field>
+        )}
         {hasRate && <Money label="Interest rate" value={form.interestRate} onChange={(interestRate) => set({ interestRate })} suffix="% / yr" />}
       </div>
+      {form.type === 'real_estate' && form.flows.length > 0 && (
+        <Calc>
+          Current value{' '}
+          <b className="text-ink">
+            {formatMoney(Math.max(0, num(form.currentValue) + netFlows({ flows: form.flows.map((f) => ({ ...f, amount: num(f.amount), growth: Number(f.growth) || 0 })) })), form.currency)}
+          </b>{' '}
+          = property value + each contribution × (1 + its value increase %) − withdrawals.
+        </Calc>
+      )}
+      {gold && (
+        <Calc>
+          {ratePerGram > 0 ? (
+            <>
+              <div>
+                Live {form.purity || '24K'} rate <b className="text-ink">{formatMoney(ratePerGram, form.currency)} / g</b>
+                {livePrice?.updatedAt && <span className="text-stone-400"> · updated {new Date(livePrice.updatedAt).toLocaleTimeString()}</span>}
+              </div>
+              {goldAuto ? (
+                <div>
+                  Current value <b className="text-ink">{formatMoney(goldValue, form.currency)}</b> = {+totalGrams.toFixed(3)} g × rate, updated automatically.
+                </div>
+              ) : (
+                <div>Enter grams to calculate the current value automatically.</div>
+              )}
+            </>
+          ) : (
+            <div>Live gold rate unavailable right now; enter the current value by hand.</div>
+          )}
+        </Calc>
+      )}
       {fd && (
         <>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -228,15 +281,21 @@ export function AssetForm({ open, record, currencies, defaultCurrency, onSave, o
           ) : (
             <div className="space-y-2">
               {form.flows.map((f, i) => (
-                <div key={f.id || i} className={`grid grid-cols-[1fr_1fr] ${hasGrams ? 'sm:grid-cols-[9rem_8rem_1fr_6rem_1fr_auto]' : 'sm:grid-cols-[9rem_8rem_1fr_1fr_auto]'} gap-2 items-center`}>
+                <div key={f.id || i} className={`grid grid-cols-[1fr_1fr] ${hasGrams || realEstate ? 'sm:grid-cols-[9rem_8rem_1fr_6rem_1fr_auto]' : 'sm:grid-cols-[9rem_8rem_1fr_1fr_auto]'} gap-2 items-center`}>
                   <input type="date" className={inputClass} value={f.date} onChange={(e) => setFlow(i, { date: e.target.value })} aria-label="Date" />
                   <select className={inputClass} value={f.kind} onChange={(e) => setFlow(i, { kind: e.target.value })} aria-label="Kind">
                     <option value="contribution">Added</option>
                     <option value="withdrawal">Withdrawn</option>
                   </select>
-                  <input type="number" min="0" step="0.01" className={inputClass} value={f.amount} onChange={(e) => setFlow(i, { amount: e.target.value })} placeholder="Amount" aria-label="Amount" />
+                  <input type="number" min="0" step="0.01" className={inputClass} value={f.amount} onChange={(e) => setFlow(i, { amount: e.target.value, autoAmount: false })} placeholder="Amount" aria-label="Amount" />
+                  {realEstate && (
+                    <input
+                      type="number" step="0.1" className={inputClass} value={f.kind === 'contribution' ? f.growth ?? '' : ''} disabled={f.kind !== 'contribution'}
+                      onChange={(e) => setFlow(i, { growth: e.target.value })} placeholder="Value +%" aria-label="Value increase %" title="How much this contribution raised the property value, in % of its amount"
+                    />
+                  )}
                   {hasGrams && (
-                    <input type="number" min="0" step="0.001" className={inputClass} value={f.grams ?? ''} onChange={(e) => setFlow(i, { grams: e.target.value })} placeholder="Grams" aria-label="Grams" />
+                    <input type="number" min="0" step="0.001" className={inputClass} value={f.grams ?? ''} onChange={(e) => setFlow(i, { grams: e.target.value, ...(ratePerGram > 0 && (f.autoAmount || !f.amount) ? { amount: e.target.value ? String(Math.round(num(e.target.value) * ratePerGram * 100) / 100) : '', autoAmount: true } : {}) })} placeholder="Grams" aria-label="Grams" />
                   )}
                   <input className={inputClass} value={f.note} onChange={(e) => setFlow(i, { note: e.target.value })} placeholder="Note" aria-label="Note" />
                   <IconButton icon={Trash} label="Remove" onClick={() => set({ flows: form.flows.filter((_, j) => j !== i) })} />
