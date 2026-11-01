@@ -174,7 +174,7 @@ function useWealth() {
     if (!session) return null;
     try {
       const goldPrice = await wealthApi.goldPrice(session.token);
-      if (goldPrice) setData((d) => d && { ...d, goldPrice });
+      if (goldPrice?.aedPerGram24) setData((d) => d && { ...d, goldPrice });
       return goldPrice;
     } catch {
       return null;
@@ -206,7 +206,16 @@ function useWealth() {
   const call = (fn) => saving(fn);
   const raw = (fn) => withUnlock('Enter your PIN to continue.', fn);
 
-  return { data, failed, state, prompt, answer, load, create, update, remove, saveSettings, saveSnapshot, refreshGold, merge, call, raw, lock: lockVault };
+  // With auto-update on, every listed currency uses the server's daily market rate (fetched at
+  // 18:00 UAE time); a currency the feed lacks keeps its hand-entered rate. Saved rates stay as typed.
+  const view = useMemo(() => {
+    if (!data?.settings?.autoRates || !data.marketRates?.rates) return data;
+    const market = data.marketRates.rates;
+    const rates = Object.fromEntries(Object.entries(data.settings.rates || {}).map(([c, r]) => [c, market[c] > 0 ? market[c] : r]));
+    return { ...data, settings: { ...data.settings, rates, manualRates: data.settings.rates } };
+  }, [data]);
+
+  return { data: view, failed, state, prompt, answer, load, create, update, remove, saveSettings, saveSnapshot, refreshGold, merge, call, raw, lock: lockVault };
 }
 
 /* ---------- Page ---------- */
@@ -2219,13 +2228,33 @@ const parseDraft = (f) => ({
 /* ---------- Currencies ---------- */
 
 function Currencies({ w, settings, currencies }) {
-  const [rates, setRates] = useState(() => toDraft(settings.rates));
+  const [rates, setRates] = useState(() => toDraft(settings.manualRates ?? settings.rates));
   const [code, setCode] = useState('');
   const [error, setError] = useState('');
-  useEffect(() => setRates(toDraft(settings.rates)), [settings.rates]);
+  const [market, setMarket] = useState(null); // { updatedAt, source } of the last fetched market rates
+  const [fetching, setFetching] = useState(false);
+
+  // Fills every listed currency with today's market rate; nothing is stored until "Save rates".
+  const fromMarket = async () => {
+    setFetching(true);
+    setError('');
+    try {
+      const res = await w.raw((t) => wealthApi.fxRates(t));
+      if (!res) return;
+      const missing = Object.keys(rates).filter((c) => !(res.rates[c] > 0));
+      setRates((r) => Object.fromEntries(Object.entries(r).map(([c, val]) => [c, res.rates[c] > 0 ? String(+res.rates[c].toPrecision(6)) : val])));
+      setMarket(res);
+      if (missing.length) setError(`No market rate for ${missing.join(', ')}; left as entered.`);
+    } catch (e) {
+      setError(e.message || 'Could not fetch market rates');
+    } finally {
+      setFetching(false);
+    }
+  };
+  useEffect(() => setRates(toDraft(settings.manualRates ?? settings.rates)), [settings.manualRates, settings.rates]);
   const parsed = Object.fromEntries(Object.entries(rates).map(([c, v]) => [c, Number(v)]));
   const invalid = Object.entries(parsed).filter(([, v]) => !(v > 0)).map(([c]) => c);
-  const dirty = JSON.stringify(parsed) !== JSON.stringify(Object.fromEntries(Object.entries(toDraft(settings.rates)).map(([c, v]) => [c, Number(v)])));
+  const dirty = JSON.stringify(parsed) !== JSON.stringify(Object.fromEntries(Object.entries(toDraft(settings.manualRates ?? settings.rates)).map(([c, v]) => [c, Number(v)])));
 
   const add = () => {
     const c = code.trim().toUpperCase();
@@ -2245,10 +2274,26 @@ function Currencies({ w, settings, currencies }) {
     <Section
       title="Currencies & exchange rates"
       icon={Coins}
-      subtitle={`Every record keeps its own currency and is converted to ${settings.baseCurrency} for totals using these rates. There's no live feed, so update them when rates move.`}
-      action={dirty && <Button disabled={invalid.length > 0} onClick={() => w.saveSettings({ rates: parsed })}>Save rates</Button>}
+      subtitle={`Every record keeps its own currency and is converted to ${settings.baseCurrency} for totals using these rates. Use "Update from market" for today's rates, or edit any rate by hand.`}
+      action={
+        <div className="flex gap-2">
+          <Button variant="soft" disabled={fetching || Object.keys(rates).length === 0} onClick={fromMarket}>{fetching ? 'Fetching…' : 'Update from market'}</Button>
+          {dirty && <Button disabled={invalid.length > 0} onClick={() => w.saveSettings({ rates: parsed })}>Save rates</Button>}
+        </div>
+      }
     >
       <div className="max-w-lg">
+        <label className="flex items-center gap-3 p-3 mb-4 rounded-xl border border-stone-200 bg-white cursor-pointer">
+          <input type="checkbox" className="w-4 h-4 accent-emerald-600" checked={!!settings.autoRates} onChange={(e) => w.saveSettings({ autoRates: e.target.checked })} />
+          <span>
+            <span className="block text-sm font-semibold text-stone-900">Update rates automatically every day at 6 PM (UAE time)</span>
+            <span className="block text-xs text-stone-500">
+              {settings.autoRates && w.data.marketRates
+                ? `Using market rates from ${w.data.marketRates.source}, fetched ${new Date(w.data.marketRates.fetchedAt).toLocaleString()}. The rates below are only used for currencies the feed doesn't have.`
+                : 'Totals use the market rate for each listed currency. The rates below stay as a fallback.'}
+            </span>
+          </span>
+        </label>
         <div className="divide-y divide-stone-200 border-y border-stone-200">
           <div className="flex items-center gap-3 py-2 text-sm">
             <span className="w-14 font-mono font-semibold text-ink">AED</span>
@@ -2278,6 +2323,12 @@ function Currencies({ w, settings, currencies }) {
         </div>
         {error && <p className="text-xs font-medium text-rose-600 mt-2">{error}</p>}
         {invalid.length > 0 && <p className="text-xs font-medium text-rose-600 mt-2">Enter a rate above 0 for {invalid.join(', ')}.</p>}
+        {market && (
+          <p className="text-[11px] text-stone-500 mt-2">
+            Market rates from {market.source === 'ExchangeRate-API' ? <a className="underline" href="https://www.exchangerate-api.com" target="_blank" rel="noreferrer">Rates by ExchangeRate-API</a> : market.source}
+            {market.updatedAt && `, updated ${new Date(market.updatedAt).toLocaleDateString()}`}. Review and press Save rates to keep them.
+          </p>
+        )}
         <p className="text-[11px] text-stone-400 mt-3">Available in forms: {currencies.join(', ')}.</p>
       </div>
     </Section>

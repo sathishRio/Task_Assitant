@@ -239,7 +239,7 @@ export function AssetForm({ open, record, currencies, defaultCurrency, goldPrice
               )}
             </>
           ) : (
-            <div>Live gold rate unavailable right now; enter the current value by hand.</div>
+            <div>Live gold rate unavailable right now{livePrice?.error ? ` (${livePrice.error})` : ''}; enter the current value by hand.</div>
           )}
         </Calc>
       )}
