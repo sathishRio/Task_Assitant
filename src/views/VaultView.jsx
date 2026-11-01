@@ -766,19 +766,23 @@ export default function VaultView() {
       </Card>
 
       <div className="flex flex-wrap gap-2 justify-end mt-4">
-        <Button variant="ghost" icon={Download} onClick={exportAll}>Export</Button>
-        <Button variant="ghost" icon={Upload} onClick={() => importRef.current?.click()}>Import</Button>
-        <input
-          ref={importRef}
-          type="file"
-          accept="application/json,.json"
-          className="hidden"
-          onChange={(e) => {
-            const f = e.target.files?.[0];
-            e.target.value = '';
-            if (f) importFile(f);
-          }}
-        />
+        {status.transfer && (
+          <>
+            <Button variant="ghost" icon={Download} onClick={exportAll}>Export</Button>
+            <Button variant="ghost" icon={Upload} onClick={() => importRef.current?.click()}>Import</Button>
+            <input
+              ref={importRef}
+              type="file"
+              accept="application/json,.json"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                e.target.value = '';
+                if (f) importFile(f);
+              }}
+            />
+          </>
+        )}
         <Button variant="ghost" icon={KeyRound} onClick={() => setModal('pin')}>Change PIN</Button>
         <Button variant="ghost" onClick={() => setModal('reset')}>Forgot PIN? Reset vault</Button>
       </div>
