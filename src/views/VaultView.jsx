@@ -540,8 +540,8 @@ export default function VaultView() {
   const remove = async (entry) => {
     if (!window.confirm(`Delete the saved password for "${entry.title}"? This cannot be undone.`)) return;
     try {
-      const ok = await withUnlock(`Delete ${entry.title}.`, (t) => vaultApi.remove(t, entry.id).then(() => true));
-      if (!ok) return;
+      await vaultApi.remove(getVaultSession()?.token, entry.id);
+      setRevealed(({ [entry.id]: _, ...rest }) => rest);
       flash('Password deleted');
       // Step back a page if this was the last item on it.
       if (list.items.length === 1 && page > 1) setPage(page - 1);
