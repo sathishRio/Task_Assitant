@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  Check, ChevronLeft, ChevronRight, Copy, ExternalLink, Eye, EyeOff, KeyRound, Lock, LockOpen, Pencil, Plus, RefreshCw,
+  Check, ChevronLeft, ChevronRight, Copy, Download, ExternalLink, Upload, Eye, EyeOff, KeyRound, Lock, LockOpen, Pencil, Plus, RefreshCw,
   Search, ShieldCheck, Trash, TriangleAlert, Wand,
 } from 'lucide-react';
 import { AuthError, vaultApi } from '../api';
@@ -402,6 +402,7 @@ export default function VaultView() {
   const [form, setForm] = useState(null); // { entry?, secrets? }
   const [modal, setModal] = useState(null); // 'pin' | 'reset'
   const countdown = useCountdown(session);
+  const importRef = useRef(null);
 
   useEffect(() => subscribeVault(() => setSession(getVaultSession())), []);
   // Locking hides anything that was revealed.
@@ -546,6 +547,53 @@ export default function VaultView() {
       // Step back a page if this was the last item on it.
       if (list.items.length === 1 && page > 1) setPage(page - 1);
       else loadList();
+    } catch (e) {
+      handleError(e);
+    }
+  };
+
+  const exportAll = async () => {
+    if (!window.confirm('The export file contains every password and all Wealth data in PLAIN TEXT. Keep it safe and delete it after importing. Continue?')) return;
+    try {
+      const data = await withUnlock('Export all passwords (decrypted).', (t) => vaultApi.exportAll(t));
+      if (!data) return;
+      const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+      const a = Object.assign(document.createElement('a'), { href: url, download: `vault-export-${data.exportedAt.slice(0, 10)}.json` });
+      a.click();
+      URL.revokeObjectURL(url);
+      flash(`Exported ${data.entries.length} password${data.entries.length === 1 ? '' : 's'} and ${data.wealth?.length || 0} Wealth records`);
+    } catch (e) {
+      handleError(e);
+    }
+  };
+
+  const importFile = async (file) => {
+    try {
+      let parsed;
+      try {
+        parsed = JSON.parse(await file.text());
+      } catch {
+        throw new Error('That file is not valid JSON');
+      }
+      const entries = parsed?.entries;
+      if (!Array.isArray(entries)) throw new Error('Not a vault export file');
+      let wealth = Array.isArray(parsed.wealth) && parsed.wealth.length ? parsed.wealth : null;
+      if (
+        wealth &&
+        !window.confirm(
+          `This file also has ${wealth.length} Wealth records.\n\nOK = REPLACE all your current Wealth data with the file's.\nCancel = import passwords only.`,
+        )
+      )
+        wealth = null;
+      const r = await withUnlock(`Import ${entries.length} passwords${wealth ? ' and Wealth data' : ''} with this vault's PIN.`, (t) =>
+        vaultApi.importAll(t, entries, wealth),
+      );
+      if (!r) return;
+      flash(
+        `Imported ${r.imported} password${r.imported === 1 ? '' : 's'}${r.skipped ? ` (skipped ${r.skipped})` : ''}` +
+          (r.wealth ? `, ${r.wealth.imported} Wealth records` : ''),
+      );
+      loadList();
     } catch (e) {
       handleError(e);
     }
@@ -718,6 +766,19 @@ export default function VaultView() {
       </Card>
 
       <div className="flex flex-wrap gap-2 justify-end mt-4">
+        <Button variant="ghost" icon={Download} onClick={exportAll}>Export</Button>
+        <Button variant="ghost" icon={Upload} onClick={() => importRef.current?.click()}>Import</Button>
+        <input
+          ref={importRef}
+          type="file"
+          accept="application/json,.json"
+          className="hidden"
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            e.target.value = '';
+            if (f) importFile(f);
+          }}
+        />
         <Button variant="ghost" icon={KeyRound} onClick={() => setModal('pin')}>Change PIN</Button>
         <Button variant="ghost" onClick={() => setModal('reset')}>Forgot PIN? Reset vault</Button>
       </div>

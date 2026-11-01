@@ -68,6 +68,9 @@ export const vaultApi = {
   update: (unlock, id, data) => request('PUT', `/vault/entries/${id}`, data, withUnlock(unlock)),
   remove: (unlock, id) => request('DELETE', `/vault/entries/${id}`, undefined, withUnlock(unlock)),
   reveal: (unlock, id) => request('POST', `/vault/entries/${id}/reveal`, {}, withUnlock(unlock)),
+  exportAll: (unlock) => request('POST', '/vault/export', {}, withUnlock(unlock)),
+  importAll: (unlock, entries, wealth) =>
+    request('POST', '/vault/import', { entries, ...(wealth ? { wealth, replaceWealth: true } : {}) }, withUnlock(unlock)),
 };
 
 // Wealth management (web only). `collection` is assets | liabilities | debts | entries | fixed | transfers |
