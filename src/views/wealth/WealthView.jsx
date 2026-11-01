@@ -16,7 +16,7 @@ import { AssetForm, BudgetForm, DebtForm, EntryForm, FixedForm, GoalForm, Liabil
 import {
   ASSET_TYPES, GOAL_TYPES, LIABILITY_TYPES, addMonths, assetPerformance, averageMonth, budgetVsActual, commitments, debtStatus,
   convert, currenciesOf, expensesByCategory, fdMaturity, forecast, formatDay, formatMoney, formatMonth, formatPct, categoriesOf, goalProgress,
-  insights, isFd, labelOf, loanPlan, monthTotals, monthOf, netWorthSeries, prepayVsInvest, setMasked, thisMonth, totals, withFixed, withLiabilities, withBalances, withStatementBalances, splitPlanned, heldAmounts, accountMonth, assetValue, isAccount, isTracked, transfersIn, projectCashflow, fixedAmount, hasRange, isSpread, FREQUENCIES,
+  insights, isFd, labelOf, loanPlan, monthTotals, monthOf, netWorthSeries, prepayVsInvest, setMasked, thisMonth, totals, withFixed, withLiabilities, withBalances, withStatementBalances, withGoldPrices, splitPlanned, heldAmounts, accountMonth, assetValue, isAccount, isTracked, transfersIn, projectCashflow, fixedAmount, hasRange, isSpread, FREQUENCIES,
 } from './calc';
 
 // Wealth Management (#/wealth). Reachable by URL only: it is not in the header or account menu.
@@ -271,7 +271,9 @@ function WealthPage({ w, tab, setTab, hide, toggleHide }) {
     const linked = withLiabilities(withFixed(w.data.entries, w.data.fixed, now), w.data.liabilities, now);
     const transfers = w.data.transfers || [];
     const transactions = w.data.transactions || [];
-    const { assets, liabilities } = withStatementBalances(withBalances(w.data.assets, linked, transfers, now, w.data.settings.rates), w.data.liabilities, transactions);
+    const balanced = withStatementBalances(withBalances(w.data.assets, linked, transfers, now, w.data.settings.rates), w.data.liabilities, transactions);
+    const assets = withGoldPrices(balanced.assets, w.data.goldPrice, w.data.settings.rates);
+    const { liabilities } = balanced;
     // Month figures come from statement lines and hand-added entries only; fixed items and EMIs are
     // expected amounts (`planned`) for the forecast and the hold until a line pays them. `schedule` keeps
     // every fixed item's due share per month, paid or not.
@@ -790,6 +792,7 @@ function Assets({ w, data, base, rates, currencies, money, t }) {
                       <span className="w-2.5 h-2.5 rounded-[3px] shrink-0" style={{ backgroundColor: TYPE_COLOR[a.type] }} />
                       <span className="text-sm font-semibold text-ink truncate">{a.name}</span>
                       <Badge>{labelOf(ASSET_TYPES, a.type)}</Badge>
+                      {a.type === 'gold' && perf.grams > 0 && <Badge tone={TONES.amber}>{a.purity || '24K'}{a.livePrice ? ' · live rate' : ''}</Badge>}
                       {a.reserved && <Badge tone={TONES.amber}>Set aside · not counted</Badge>}
                       {a.interestRate > 0 && <Badge tone={TONES.blue}>{a.interestRate}% p.a.</Badge>}
                     </div>
@@ -807,6 +810,7 @@ function Assets({ w, data, base, rates, currencies, money, t }) {
                         a.type !== 'bank' &&
                         perf.invested > 0 && (
                           <>
+                            {perf.grams > 0 && <span>{+perf.grams.toFixed(3)} g</span>}
                             <span>Put in {formatMoney(perf.invested, a.currency)}</span>
                             {(perf.contributions > 0 || perf.withdrawals > 0) && (
                               <span>

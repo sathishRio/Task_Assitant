@@ -122,10 +122,12 @@ const Calc = ({ children }) => (
 export function AssetForm({ open, record, currencies, defaultCurrency, onSave, onDelete, onClose }) {
   const empty = {
     name: '', type: 'bank', currency: defaultCurrency, principal: '', currentValue: '', interestRate: '',
-    compounding: 'quarterly', startDate: '', maturityDate: '', flows: [], reserved: false, reservedAmount: '', holdAmount: '', balanceMonth: '', openingDate: '', notes: '',
+    compounding: 'quarterly', startDate: '', maturityDate: '', flows: [], grams: '', purity: '24K', reserved: false, reservedAmount: '', holdAmount: '', balanceMonth: '', openingDate: '', notes: '',
   };
   const [form, set, error, setError] = useForm(open, record, empty);
   const fd = isFd(form);
+  const hasGrams = form.type === 'gold' || form.type === 'other';
+  const totalGrams = num(form.grams) + form.flows.reduce((t, f) => t + (f.kind === 'withdrawal' ? -1 : 1) * num(f.grams), 0);
   const hasRate = fd || form.type === 'bank' || form.type === 'other';
   const preview = fd && { ...form, principal: num(form.principal), interestRate: num(form.interestRate) };
   const maturity = preview && fdMaturity(preview);
@@ -145,12 +147,14 @@ export function AssetForm({ open, record, currencies, defaultCurrency, onSave, o
       balanceMonth: '',
       openingDate: form.type === 'bank' ? form.openingDate || null : null,
       principal: num(form.principal),
+      grams: hasGrams ? num(form.grams) : 0,
+      purity: form.purity || '24K',
       currentValue: fd ? 0 : num(form.currentValue),
       interestRate: num(form.interestRate),
       compounding: form.compounding,
       startDate: form.startDate || null,
       maturityDate: form.maturityDate || null,
-      flows: form.flows.map(({ date, kind, amount, note }) => ({ date, kind, amount: num(amount), note: note || '' })),
+      flows: form.flows.map(({ date, kind, amount, grams, note }) => ({ date, kind, amount: num(amount), grams: hasGrams ? num(grams) : 0, note: note || '' })),
     });
   };
 
@@ -175,11 +179,15 @@ export function AssetForm({ open, record, currencies, defaultCurrency, onSave, o
         <Money label={fd ? 'Deposit amount' : 'Amount put in'} value={form.principal} onChange={(principal) => set({ principal })} />
         {!fd && (
           <Money
-            label={form.type === 'bank' ? 'Opening balance' : 'Current value'}
+            label={form.type === 'bank' ? 'Opening balance' : form.type === 'gold' ? 'Current value (if no live rate)' : 'Current value'}
             value={form.currentValue}
             onChange={(currentValue) => set({ currentValue })}
           />
         )}
+        {form.type === 'gold' && (
+          <Select label="Purity" value={form.purity || '24K'} onChange={(purity) => set({ purity })} options={[{ key: '24K', label: '24K' }, { key: '22K', label: '22K' }]} />
+        )}
+        {hasGrams && <Money label="Grams bought" step="0.001" value={form.grams ?? ''} onChange={(grams) => set({ grams })} suffix="g" />}
         {hasRate && <Money label="Interest rate" value={form.interestRate} onChange={(interestRate) => set({ interestRate })} suffix="% / yr" />}
       </div>
       {fd && (
@@ -211,7 +219,7 @@ export function AssetForm({ open, record, currencies, defaultCurrency, onSave, o
         <div>
           <div className="flex items-center justify-between mb-1.5">
             <span className="font-mono text-[11px] font-semibold text-stone-500 uppercase tracking-wider">Contributions & withdrawals</span>
-            <Button variant="ghost" icon={Plus} onClick={() => set({ flows: [...form.flows, { date: todayStr(), kind: 'contribution', amount: '', note: '' }] })}>
+            <Button variant="ghost" icon={Plus} onClick={() => set({ flows: [...form.flows, { date: todayStr(), kind: 'contribution', amount: '', grams: '', note: '' }] })}>
               Add
             </Button>
           </div>
@@ -220,18 +228,26 @@ export function AssetForm({ open, record, currencies, defaultCurrency, onSave, o
           ) : (
             <div className="space-y-2">
               {form.flows.map((f, i) => (
-                <div key={f.id || i} className="grid grid-cols-[1fr_1fr] sm:grid-cols-[9rem_8rem_1fr_1fr_auto] gap-2 items-center">
+                <div key={f.id || i} className={`grid grid-cols-[1fr_1fr] ${hasGrams ? 'sm:grid-cols-[9rem_8rem_1fr_6rem_1fr_auto]' : 'sm:grid-cols-[9rem_8rem_1fr_1fr_auto]'} gap-2 items-center`}>
                   <input type="date" className={inputClass} value={f.date} onChange={(e) => setFlow(i, { date: e.target.value })} aria-label="Date" />
                   <select className={inputClass} value={f.kind} onChange={(e) => setFlow(i, { kind: e.target.value })} aria-label="Kind">
                     <option value="contribution">Added</option>
                     <option value="withdrawal">Withdrawn</option>
                   </select>
                   <input type="number" min="0" step="0.01" className={inputClass} value={f.amount} onChange={(e) => setFlow(i, { amount: e.target.value })} placeholder="Amount" aria-label="Amount" />
+                  {hasGrams && (
+                    <input type="number" min="0" step="0.001" className={inputClass} value={f.grams ?? ''} onChange={(e) => setFlow(i, { grams: e.target.value })} placeholder="Grams" aria-label="Grams" />
+                  )}
                   <input className={inputClass} value={f.note} onChange={(e) => setFlow(i, { note: e.target.value })} placeholder="Note" aria-label="Note" />
                   <IconButton icon={Trash} label="Remove" onClick={() => set({ flows: form.flows.filter((_, j) => j !== i) })} />
                 </div>
               ))}
             </div>
+          )}
+          {hasGrams && totalGrams > 0 && (
+            <p className="mt-2 text-xs text-stone-600">
+              Total held <b className="text-ink">{+totalGrams.toFixed(3)} g</b>
+            </p>
           )}
         </div>
       )}

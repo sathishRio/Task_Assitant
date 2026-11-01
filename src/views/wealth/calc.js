@@ -160,15 +160,33 @@ export function fdMaturity(asset) {
 // `balance` is set by withBalances for bank accounts that track their balance automatically.
 export const assetValue = (asset) => (isFd(asset) ? fdValueOn(asset, todayStr()) : asset.balance ?? asset.currentValue);
 
+// Gold with grams recorded is valued at the live market rate: grams × 24K price per gram × purity
+// (22K = 22/24). Falls back to the hand-entered current value when the price is unavailable.
+export const GOLD_PURITY = { '24K': 1, '22K': 22 / 24 };
+export const goldGrams = (asset) =>
+  (asset.grams || 0) + (asset.flows || []).reduce((t, f) => t + (f.kind === 'withdrawal' ? -1 : 1) * (f.grams || 0), 0);
+export function withGoldPrices(assets, goldPrice, rates) {
+  if (!goldPrice?.aedPerGram24) return assets;
+  return assets.map((a) => {
+    const grams = a.type === 'gold' ? goldGrams(a) : 0;
+    if (!(grams > 0)) return a;
+    const aed = grams * goldPrice.aedPerGram24 * (GOLD_PURITY[a.purity] ?? 1);
+    return { ...a, balance: convert(aed, 'AED', a.currency, rates), livePrice: true };
+  });
+}
+
 // Money put in: principal + contributions − withdrawals. Return = value − money put in.
 export function assetPerformance(asset) {
   const flows = asset.flows || [];
   const contributions = flows.filter((f) => f.kind === 'contribution').reduce((s, f) => s + f.amount, 0);
   const withdrawals = flows.filter((f) => f.kind === 'withdrawal').reduce((s, f) => s + f.amount, 0);
   const invested = asset.principal + contributions - withdrawals;
+  const gramsIn = flows.filter((f) => f.kind === 'contribution').reduce((s, f) => s + (f.grams || 0), 0);
+  const gramsOut = flows.filter((f) => f.kind === 'withdrawal').reduce((s, f) => s + (f.grams || 0), 0);
+  const grams = (asset.grams || 0) + gramsIn - gramsOut;
   const value = assetValue(asset);
   const gain = value - invested;
-  return { contributions, withdrawals, invested, value, gain, gainPct: invested > 0 ? gain / invested : NaN };
+  return { contributions, withdrawals, invested, value, gain, grams, gramsIn, gramsOut, gainPct: invested > 0 ? gain / invested : NaN };
 }
 
 // Overview buckets: bank = cash; real estate = property; everything else = investments.
