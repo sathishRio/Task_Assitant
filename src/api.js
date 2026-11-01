@@ -58,7 +58,7 @@ const withUnlock = (unlock) => ({ 'x-vault-unlock': unlock || '' });
 export const vaultApi = {
   status: (unlock) => request('GET', '/vault/status', undefined, withUnlock(unlock)),
   setup: (pin) => request('POST', '/vault/setup', { pin }),
-  unlock: (pin) => request('POST', '/vault/unlock', { pin }),
+  unlock: (pin, extended = false) => request('POST', '/vault/unlock', { pin, extended }),
   lock: (unlock) => request('POST', '/vault/lock', {}, withUnlock(unlock)),
   changePin: (currentPin, newPin) => request('POST', '/vault/pin', { currentPin, newPin }),
   reset: () => request('DELETE', '/vault', { confirm: 'DELETE' }),
@@ -70,15 +70,49 @@ export const vaultApi = {
   reveal: (unlock, id) => request('POST', `/vault/entries/${id}/reveal`, {}, withUnlock(unlock)),
 };
 
-// Wealth management (web only). `collection` is assets | liabilities | debts | entries | budgets | goals.
+// Wealth management (web only). `collection` is assets | liabilities | debts | entries | fixed | transfers |
+// transactions | sources | rules | budgets | goals.
+// Stored encrypted with the vault key, so every call needs the vault unlock token (423 when locked).
 export const wealthApi = {
-  load: () => request('GET', '/wealth'),
-  saveSettings: (data) => request('PUT', '/wealth/settings', data),
-  saveSnapshot: (month, data) => request('PUT', `/wealth/snapshots/${month}`, data),
-  create: (collection, data) => request('POST', `/wealth/${collection}`, data),
-  update: (collection, id, data) => request('PUT', `/wealth/${collection}/${id}`, data),
-  remove: (collection, id) => request('DELETE', `/wealth/${collection}/${id}`),
+  load: (unlock) => request('GET', '/wealth', undefined, withUnlock(unlock)),
+  saveSettings: (unlock, data) => request('PUT', '/wealth/settings', data, withUnlock(unlock)),
+  saveSnapshot: (unlock, month, data) => request('PUT', `/wealth/snapshots/${month}`, data, withUnlock(unlock)),
+  create: (unlock, collection, data) => request('POST', `/wealth/${collection}`, data, withUnlock(unlock)),
+  update: (unlock, collection, id, data) => request('PUT', `/wealth/${collection}/${id}`, data, withUnlock(unlock)),
+  remove: (unlock, collection, id) => request('DELETE', `/wealth/${collection}/${id}`, undefined, withUnlock(unlock)),
+  // Statements: `account` is "asset:<id>" (bank account) or "liability:<id>" (credit card); `file` is base64 PDF.
+  parseStatement: (unlock, data) => request('POST', '/wealth/statements/parse', data, withUnlock(unlock)),
+  importTransactions: (unlock, data) => request('POST', '/wealth/transactions/import', data, withUnlock(unlock)),
+  tagTransaction: (unlock, id, data) => request('POST', `/wealth/transactions/${id}/tag`, data, withUnlock(unlock)),
+  gmailStatus: (unlock) => request('GET', '/wealth/gmail/status', undefined, withUnlock(unlock)),
+  gmailConnect: (unlock, code) => request('POST', '/wealth/gmail/connect', { code }, withUnlock(unlock)),
+  gmailDisconnect: (unlock) => request('DELETE', '/wealth/gmail', undefined, withUnlock(unlock)),
+  gmailSync: (unlock, sourceId) => request('POST', '/wealth/gmail/sync', sourceId ? { sourceId } : {}, withUnlock(unlock)),
 };
+
+// Coursera learning plan (web only). Course data comes in through the sync bookmarklet or `importSync`.
+export const learningApi = {
+  load: () => request('GET', '/learning'),
+  saveSettings: (data) => request('PUT', '/learning/settings', data),
+  syncToken: () => request('GET', '/learning/sync-token'),
+  importSync: (data) => request('POST', '/learning/import', data),
+  createCourse: (data) => request('POST', '/learning/courses', data),
+  updateCourse: (id, data) => request('PUT', `/learning/courses/${id}`, data),
+  deleteCourse: (id) => request('DELETE', `/learning/courses/${id}`),
+  setItemDone: (id, key, done, today) => request('PUT', `/learning/courses/${id}/items/${encodeURIComponent(key)}`, { done, today }),
+  // Learning notes: a topic with points (also written by the Chrome extension).
+  notesToken: () => request('GET', '/learning/notes-token'),
+  notes: () => request('GET', '/learning/notes'),
+  createNote: (data) => request('POST', '/learning/notes', data),
+  renameNote: (id, topic) => request('PUT', `/learning/notes/${id}`, { topic }),
+  deleteNote: (id) => request('DELETE', `/learning/notes/${id}`),
+  addPoints: (id, points) => request('POST', `/learning/notes/${id}/points`, { points }),
+  updatePoint: (id, pointId, text) => request('PUT', `/learning/notes/${id}/points/${pointId}`, { text }),
+  deletePoint: (id, pointId) => request('DELETE', `/learning/notes/${id}/points/${pointId}`),
+};
+
+// Absolute API origin for code that runs on another site (the Coursera bookmarklet).
+export const apiOrigin = () => API_BASE || window.location.origin;
 
 export const api = {
   authConfig: () => request('GET', '/auth/config'),

@@ -1,11 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Plus, Trash } from 'lucide-react';
 import { FormModal } from '../../forms';
 import { todayStr } from '../../dates';
 import { Button, Field, IconButton, cx, inputClass } from '../../ui';
 import {
-  ASSET_TYPES, COMPOUNDING, EXPENSE_CATEGORIES, GOAL_TYPES, INCOME_CATEGORIES, LIABILITY_TYPES,
-  debtStatus, fdMaturity, formatMoney, isFd, loanPlan, formatDay, thisMonth,
+  ASSET_TYPES, COMPOUNDING, GOAL_TYPES, LIABILITY_TYPES,
+  FREQUENCIES, debtStatus, fdMaturity, fixedAmount, formatMoney, isFd, loanPlan, formatDay, thisMonth,
 } from './calc';
 
 // Add / edit forms for the Wealth page. Each takes `record` (null = new), `defaults`, and
@@ -56,6 +56,63 @@ const Select = ({ label, value, onChange, options }) => (
   </Field>
 );
 
+// Category dropdown; "Custom…" switches to a text box for a name not in the list.
+// Bank account an item is paid into or out of. Empty = not linked, so no balance changes.
+function AccountSelect({ label = 'Account', value, onChange, accounts, none = 'Not linked' }) {
+  if (!accounts?.length) return null;
+  return (
+    <Select
+      label={label}
+      value={value || ''}
+      onChange={onChange}
+      options={[...(none ? [{ key: '', label: none }] : []), ...accounts.map((a) => ({ key: a.id, label: a.name }))]}
+    />
+  );
+}
+
+function CategorySelect({ label = 'Category', value, onChange, categories, autoFocus }) {
+  const [custom, setCustom] = useState(false);
+  const known = categories.includes(value);
+  if (custom || (value && !known)) {
+    return (
+      <Field label={label}>
+        <div className="flex gap-2">
+          <input autoFocus={autoFocus || custom} className={inputClass} value={value} onChange={(e) => onChange(e.target.value)} placeholder="Category name" />
+          <button
+            type="button"
+            className="shrink-0 text-xs font-semibold text-stone-500 hover:text-ink"
+            onClick={() => {
+              setCustom(false);
+              onChange(categories[0]);
+            }}
+          >
+            List
+          </button>
+        </div>
+      </Field>
+    );
+  }
+  return (
+    <Field label={label}>
+      <select
+        autoFocus={autoFocus}
+        className={inputClass}
+        value={known ? value : ''}
+        onChange={(e) => {
+          if (e.target.value === '__custom') {
+            setCustom(true);
+            onChange('');
+          } else onChange(e.target.value);
+        }}
+      >
+        {!known && <option value="" disabled>Pick a category</option>}
+        {categories.map((c) => <option key={c} value={c}>{c}</option>)}
+        <option value="__custom">Custom…</option>
+      </select>
+    </Field>
+  );
+}
+
 const Calc = ({ children }) => (
   <div className="rounded-xl border-[1.5px] border-dashed border-stone-300 bg-stone-50 px-3.5 py-2.5 text-xs text-stone-600 space-y-0.5">{children}</div>
 );
@@ -65,7 +122,7 @@ const Calc = ({ children }) => (
 export function AssetForm({ open, record, currencies, defaultCurrency, onSave, onDelete, onClose }) {
   const empty = {
     name: '', type: 'bank', currency: defaultCurrency, principal: '', currentValue: '', interestRate: '',
-    compounding: 'quarterly', startDate: '', maturityDate: '', flows: [], notes: '',
+    compounding: 'quarterly', startDate: '', maturityDate: '', flows: [], reserved: false, reservedAmount: '', holdAmount: '', balanceMonth: '', openingDate: '', notes: '',
   };
   const [form, set, error, setError] = useForm(open, record, empty);
   const fd = isFd(form);
@@ -82,7 +139,11 @@ export function AssetForm({ open, record, currencies, defaultCurrency, onSave, o
     if (fd && form.maturityDate <= form.startDate) return setError('Maturity must be after the start date'), false;
     if (form.flows.some((f) => !f.date || !(num(f.amount) > 0))) return setError('Each contribution or withdrawal needs a date and amount'), false;
     return onSave({
-      name, type: form.type, currency: form.currency, notes: form.notes.trim(),
+      name, type: form.type, currency: form.currency, reserved: !!form.reserved, notes: form.notes.trim(),
+      reservedAmount: form.reserved ? 0 : num(form.reservedAmount),
+      holdAmount: form.type === 'bank' ? num(form.holdAmount) : 0,
+      balanceMonth: '',
+      openingDate: form.type === 'bank' ? form.openingDate || null : null,
       principal: num(form.principal),
       currentValue: fd ? 0 : num(form.currentValue),
       interestRate: num(form.interestRate),
@@ -112,7 +173,13 @@ export function AssetForm({ open, record, currencies, defaultCurrency, onSave, o
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
         <CurrencySelect value={form.currency} onChange={(currency) => set({ currency })} currencies={currencies} />
         <Money label={fd ? 'Deposit amount' : 'Amount put in'} value={form.principal} onChange={(principal) => set({ principal })} />
-        {!fd && <Money label="Current value" value={form.currentValue} onChange={(currentValue) => set({ currentValue })} />}
+        {!fd && (
+          <Money
+            label={form.type === 'bank' ? 'Opening balance' : 'Current value'}
+            value={form.currentValue}
+            onChange={(currentValue) => set({ currentValue })}
+          />
+        )}
         {hasRate && <Money label="Interest rate" value={form.interestRate} onChange={(interestRate) => set({ interestRate })} suffix="% / yr" />}
       </div>
       {fd && (
@@ -168,6 +235,27 @@ export function AssetForm({ open, record, currencies, defaultCurrency, onSave, o
           )}
         </div>
       )}
+      {form.type === 'bank' && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <Field label="Opening balance on">
+            <input type="date" className={inputClass} value={form.openingDate || ''} onChange={(e) => set({ openingDate: e.target.value })} />
+          </Field>
+          {!form.reserved && <Money label="Saved for later payment" value={form.reservedAmount ?? ''} onChange={(reservedAmount) => set({ reservedAmount })} />}
+          <Money label="Default hold amount" value={form.holdAmount ?? ''} onChange={(holdAmount) => set({ holdAmount })} />
+          <p className="sm:col-span-2 -mt-2 text-xs text-stone-500">
+            Balance = opening balance + money in − money out of every imported statement line from this date (all lines when empty).
+            “Saved for later” is kept out of the balance shown, total assets and net worth.
+            “Default hold” is always on hold; fixed expenses paid from this account are added to it each month.
+          </p>
+        </div>
+      )}
+      <label className="flex items-center gap-3 p-3 rounded-xl border border-stone-200 bg-white cursor-pointer">
+        <input type="checkbox" className="w-4 h-4 accent-emerald-600" checked={!!form.reserved} onChange={(e) => set({ reserved: e.target.checked })} />
+        <span>
+          <span className="block text-sm font-semibold text-stone-900">Set aside for a bill</span>
+          <span className="block text-xs text-stone-500">Money saved up for an upcoming payment. Not counted in net worth or the emergency fund.</span>
+        </span>
+      </label>
       <Field label="Notes">
         <textarea rows={2} className={inputClass} value={form.notes} onChange={(e) => set({ notes: e.target.value })} placeholder="Optional" />
       </Field>
@@ -178,22 +266,26 @@ export function AssetForm({ open, record, currencies, defaultCurrency, onSave, o
 
 /* ---------- Liability ---------- */
 
-export function LiabilityForm({ open, record, currencies, defaultCurrency, onSave, onDelete, onClose }) {
+export function LiabilityForm({ open, record, currencies, defaultCurrency, accounts, onSave, onDelete, onClose }) {
   const empty = {
     name: '', type: 'personal_loan', currency: defaultCurrency, outstanding: '', interestRate: '', emi: '',
-    remainingMonths: '', nextPaymentDate: '', notes: '',
+    remainingMonths: '', nextPaymentDate: '', accountId: '', openingDate: '', notes: '',
   };
-  const [form, set, error, setError] = useForm(open, record, empty);
+  // Cards with imported lines show a running outstanding; the form edits the opening one.
+  const opening = useMemo(() => record && { ...record, outstanding: record.openingOutstanding ?? record.outstanding }, [record]);
+  const [form, set, error, setError] = useForm(open, opening, empty);
+  const card = form.type === 'credit_card';
   const plan = loanPlan({ outstanding: num(form.outstanding), interestRate: num(form.interestRate), emi: num(form.emi), nextPaymentDate: form.nextPaymentDate || null });
 
   const save = async () => {
     const name = form.name.trim();
     if (!name) return setError('Give the liability a name'), false;
     return onSave({
-      name, type: form.type, currency: form.currency, notes: form.notes.trim(),
+      name, type: form.type, currency: form.currency, accountId: form.accountId || '', notes: form.notes.trim(),
       outstanding: num(form.outstanding), interestRate: num(form.interestRate), emi: num(form.emi),
       remainingMonths: form.remainingMonths === '' || form.remainingMonths == null ? null : num(form.remainingMonths),
       nextPaymentDate: form.nextPaymentDate || null,
+      openingDate: card ? form.openingDate || null : null,
     });
   };
 
@@ -214,7 +306,12 @@ export function LiabilityForm({ open, record, currencies, defaultCurrency, onSav
       </div>
       <div className="grid grid-cols-2 gap-4">
         <CurrencySelect value={form.currency} onChange={(currency) => set({ currency })} currencies={currencies} />
-        <Money label="Outstanding principal" value={form.outstanding} onChange={(outstanding) => set({ outstanding })} />
+        <Money label={card ? 'Opening outstanding' : 'Outstanding principal'} value={form.outstanding} onChange={(outstanding) => set({ outstanding })} />
+        {card && (
+          <Field label="Opening outstanding on">
+            <input type="date" className={inputClass} value={form.openingDate || ''} onChange={(e) => set({ openingDate: e.target.value })} />
+          </Field>
+        )}
         <Money label="Interest rate" value={form.interestRate} onChange={(interestRate) => set({ interestRate })} suffix="% / yr" />
         <Money label={form.type === 'credit_card' ? 'Monthly payment' : 'EMI'} value={form.emi} onChange={(emi) => set({ emi })} />
         <Money label="Remaining tenure" value={form.remainingMonths} onChange={(remainingMonths) => set({ remainingMonths })} step="1" suffix="months" />
@@ -240,6 +337,7 @@ export function LiabilityForm({ open, record, currencies, defaultCurrency, onSav
           )}
         </Calc>
       )}
+      <AccountSelect label="EMI paid from" value={form.accountId} onChange={(accountId) => set({ accountId })} accounts={accounts} />
       <Field label="Notes">
         <textarea rows={2} className={inputClass} value={form.notes} onChange={(e) => set({ notes: e.target.value })} placeholder="Optional" />
       </Field>
@@ -350,10 +448,10 @@ export function DebtForm({ open, record, defaults, currencies, onSave, onDelete,
 
 /* ---------- Income / expense line ---------- */
 
-export function EntryForm({ open, record, defaults, currencies, onSave, onDelete, onClose }) {
-  const empty = { month: thisMonth(), kind: 'expense', category: 'Groceries', amount: '', currency: 'AED', recurring: false, note: '', ...defaults };
+export function EntryForm({ open, record, defaults, currencies, categoryLists, accounts, onSave, onDelete, onClose }) {
+  const empty = { month: thisMonth(), kind: 'expense', category: categoryLists[defaults?.kind || 'expense'][0], amount: '', currency: 'AED', recurring: false, checklist: false, accountId: '', note: '', ...defaults };
   const [form, set, error, setError] = useForm(open, record, empty);
-  const categories = form.kind === 'income' ? INCOME_CATEGORIES : EXPENSE_CATEGORIES;
+  const categories = categoryLists[form.kind];
 
   const save = async () => {
     if (!form.month) return setError('Pick a month'), false;
@@ -361,7 +459,7 @@ export function EntryForm({ open, record, defaults, currencies, onSave, onDelete
     if (!form.category.trim()) return setError('Pick a category'), false;
     return onSave({
       month: form.month, kind: form.kind, category: form.category.trim(), amount: num(form.amount),
-      currency: form.currency, recurring: form.recurring, note: form.note.trim(),
+      currency: form.currency, recurring: form.recurring, checklist: form.kind === 'expense' && !!form.checklist, accountId: form.accountId || '', note: form.note.trim(),
     });
   };
 
@@ -378,23 +476,19 @@ export function EntryForm({ open, record, defaults, currencies, onSave, onDelete
         <Select
           label="Type"
           value={form.kind}
-          onChange={(kind) => set({ kind, category: (kind === 'income' ? INCOME_CATEGORIES : EXPENSE_CATEGORIES)[0] })}
+          onChange={(kind) => set({ kind, category: categoryLists[kind][0] })}
           options={[{ key: 'income', label: 'Income' }, { key: 'expense', label: 'Expense' }]}
         />
         <Field label="Month">
           <input type="month" className={inputClass} value={form.month} onChange={(e) => set({ month: e.target.value })} />
         </Field>
-        <Field label="Category">
-          <input className={inputClass} list="wealth-categories" value={form.category} onChange={(e) => set({ category: e.target.value })} />
-          <datalist id="wealth-categories">
-            {categories.map((c) => <option key={c} value={c} />)}
-          </datalist>
-        </Field>
+        <CategorySelect value={form.category} onChange={(category) => set({ category })} categories={categories} />
         <Money label="Amount" value={form.amount} onChange={(amount) => set({ amount })} />
         <CurrencySelect value={form.currency} onChange={(currency) => set({ currency })} currencies={currencies} />
         <Field label="Note">
           <input className={inputClass} value={form.note} onChange={(e) => set({ note: e.target.value })} placeholder="Optional" />
         </Field>
+        <AccountSelect label={form.kind === 'income' ? 'Paid into' : 'Paid from'} value={form.accountId} onChange={(accountId) => set({ accountId })} accounts={accounts} />
       </div>
       <label className="flex items-center gap-3 p-3 rounded-xl border border-stone-200 bg-white cursor-pointer">
         <input type="checkbox" className="w-4 h-4 accent-emerald-600" checked={form.recurring} onChange={(e) => set({ recurring: e.target.checked })} />
@@ -403,9 +497,191 @@ export function EntryForm({ open, record, defaults, currencies, onSave, onDelete
           <span className="block text-xs text-stone-500">Listed under monthly commitments, and can be copied into the next month.</span>
         </span>
       </label>
+      {form.kind === 'expense' && (
+        <label className="flex items-center gap-3 p-3 rounded-xl border border-stone-200 bg-white cursor-pointer">
+          <input type="checkbox" className="w-4 h-4 accent-emerald-600" checked={!!form.checklist} onChange={(e) => set({ checklist: e.target.checked })} />
+          <span>
+            <span className="block text-sm font-semibold text-stone-900">Include in monthly checklist</span>
+            <span className="block text-xs text-stone-500">Shown in the Checklist panel, so you can plan and tick it off every month.</span>
+          </span>
+        </label>
+      )}
       <p className="text-xs text-stone-500">
-        Money moved into savings or investments isn't an expense: record it as a contribution on the asset, so it is not counted twice.
+        Money moved into savings isn't an expense: record it as a transfer between accounts (or a contribution on an investment), so it is not counted twice.
       </p>
+      {error && <p className="text-xs font-medium text-rose-600">{error}</p>}
+    </FormModal>
+  );
+}
+
+/* ---------- Fixed monthly ---------- */
+
+export function FixedForm({ open, record, defaults, currencies, categoryLists, accounts, onSave, onDelete, onMoveToBudget, onClose }) {
+  const empty = { kind: 'expense', category: categoryLists[defaults?.kind || 'expense'][0], amount: '', currency: 'AED', startMonth: thisMonth(), endMonth: '', note: '', every: 1, spread: true, accountId: '', checklist: false, ...defaults };
+  const [form, set, error, setError] = useForm(open, record, empty);
+  const every = Number(form.every) || 1;
+  const per = every === 1 ? 'per month' : 'per payment';
+  const categories = categoryLists[form.kind];
+  // "Varies" turns the amount into a range: amount is the low end, amountMax the high end.
+  const varies = form.varies ?? (form.amountMax != null && form.amountMax !== '');
+
+  const save = async () => {
+    if (!(num(form.amount) > 0)) return setError(varies ? 'Enter the lowest amount' : 'Enter an amount'), false;
+    if (varies && !(num(form.amountMax) > num(form.amount))) return setError('The highest amount must be more than the lowest'), false;
+    if (!form.category.trim()) return setError('Pick a category'), false;
+    if (!form.startMonth) return setError('Pick a start month'), false;
+    if (form.endMonth && form.endMonth < form.startMonth) return setError('End month is before the start month'), false;
+    return onSave({
+      kind: form.kind, category: form.category.trim(), amount: num(form.amount), amountMax: varies ? num(form.amountMax) : null,
+      currency: form.currency, every, spread: form.spread !== false, accountId: form.accountId || '', startMonth: form.startMonth, endMonth: form.endMonth || '', note: form.note.trim(),
+      checklist: form.kind === 'expense' && !!form.checklist,
+    });
+  };
+
+  return (
+    <FormModal
+      open={open}
+      title={record ? 'Edit Fixed Item' : form.kind === 'income' ? 'Add Fixed Income' : 'Add Fixed Expense'}
+      onClose={onClose}
+      onSubmit={save}
+      deleteLabel="Delete Fixed Item"
+      onDelete={record && (async () => confirmDelete('this fixed item from every month') && (await onDelete()) && onClose())}
+    >
+      <div className="grid grid-cols-2 gap-4">
+        <Select
+          label="Type"
+          value={form.kind}
+          onChange={(kind) => set({ kind, category: categoryLists[kind][0] })}
+          options={[{ key: 'income', label: 'Income' }, { key: 'expense', label: 'Expense' }]}
+        />
+        <CategorySelect value={form.category} onChange={(category) => set({ category })} categories={categories} />
+        {varies ? (
+          <>
+            <Money label={`Lowest ${per}`} value={form.amount} onChange={(amount) => set({ amount })} />
+            <Money label={`Highest ${per}`} value={form.amountMax ?? ''} onChange={(amountMax) => set({ amountMax })} />
+          </>
+        ) : (
+          <Money label={`Amount ${per}`} value={form.amount} onChange={(amount) => set({ amount })} />
+        )}
+        <CurrencySelect value={form.currency} onChange={(currency) => set({ currency })} currencies={currencies} />
+        <Select label="Paid" value={every} onChange={(e) => set({ every: Number(e) })} options={FREQUENCIES} />
+        {every > 1 && (
+          <Select
+            label="Count it"
+            value={form.spread === false ? 'paid' : 'spread'}
+            onChange={(v) => set({ spread: v === 'spread' })}
+            options={[{ key: 'spread', label: 'Spread across every month' }, { key: 'paid', label: 'Only in the month it is paid' }]}
+          />
+        )}
+        {every > 1 && (
+          <p className="col-span-2 -mt-2 text-xs text-stone-500">
+            {form.spread === false
+              ? `The full amount counts in the “From month”, then every ${every} months after it. Set “From month” to the month of the next payment.`
+              : num(form.amount) > 0 && `Counted per month: ${formatMoney(fixedAmount({ amount: num(form.amount), amountMax: varies ? num(form.amountMax) : null, every }), form.currency)}.`}
+          </p>
+        )}
+        <label className="col-span-2 flex items-center gap-3 p-3 rounded-xl border border-stone-200 bg-white cursor-pointer">
+          <input type="checkbox" className="w-4 h-4 accent-emerald-600" checked={varies} onChange={(e) => set({ varies: e.target.checked })} />
+          <span>
+            <span className="block text-sm font-semibold text-stone-900">Amount varies (enter a range)</span>
+            <span className="block text-xs text-stone-500">For bills like utilities. Totals use the middle of the range.</span>
+          </span>
+        </label>
+        <Field label="From month">
+          <input type="month" className={inputClass} value={form.startMonth} onChange={(e) => set({ startMonth: e.target.value })} />
+        </Field>
+        <Field label="Until month">
+          <input type="month" className={inputClass} value={form.endMonth} onChange={(e) => set({ endMonth: e.target.value })} />
+        </Field>
+        <Field label="Note">
+          <input className={inputClass} value={form.note} onChange={(e) => set({ note: e.target.value })} placeholder="Optional" />
+        </Field>
+        <AccountSelect label={form.kind === 'income' ? 'Paid into' : 'Paid from'} value={form.accountId} onChange={(accountId) => set({ accountId })} accounts={accounts} />
+      </div>
+      {form.kind === 'expense' && (
+        <label className="flex items-center gap-3 p-3 rounded-xl border border-stone-200 bg-white cursor-pointer">
+          <input type="checkbox" className="w-4 h-4 accent-emerald-600" checked={!!form.checklist} onChange={(e) => set({ checklist: e.target.checked })} />
+          <span>
+            <span className="block text-sm font-semibold text-stone-900">Include in monthly checklist</span>
+            <span className="block text-xs text-stone-500">Shown in the Checklist panel in the months it is due, so you can tick it off once paid.</span>
+          </span>
+        </label>
+      )}
+      <p className="text-xs text-stone-500">Counted automatically in every month from the start month; quarterly or yearly payments are spread evenly across the months. Leave “Until month” empty to keep it going.</p>
+      {record && record.kind === 'expense' && onMoveToBudget && (
+        <div className="flex flex-wrap items-center justify-between gap-2 p-3 rounded-xl border border-stone-200 bg-stone-50">
+          <span className="text-xs text-stone-600">Not a fixed amount? Turn it into a monthly {record.category} budget instead.</span>
+          <Button variant="soft" onClick={async () => (await onMoveToBudget()) && onClose()}>Move to budget</Button>
+        </div>
+      )}
+      {error && <p className="text-xs font-medium text-rose-600">{error}</p>}
+    </FormModal>
+  );
+}
+
+/* ---------- Transfer between accounts ---------- */
+
+export function TransferForm({ open, record, defaults, currencies, accounts, onSave, onDelete, onClose }) {
+  const empty = {
+    fromId: accounts[0]?.id || '', toId: accounts[1]?.id || '', amount: '', currency: accounts[0]?.currency || 'AED',
+    monthly: false, startMonth: thisMonth(), endMonth: '', note: '', ...defaults,
+  };
+  const [form, set, error, setError] = useForm(open, record, empty);
+
+  const save = async () => {
+    if (!form.fromId || !form.toId) return setError('Pick both accounts'), false;
+    if (form.fromId === form.toId) return setError('Pick two different accounts'), false;
+    if (!(num(form.amount) > 0)) return setError('Enter an amount'), false;
+    if (!form.startMonth) return setError('Pick a month'), false;
+    if (form.monthly && form.endMonth && form.endMonth < form.startMonth) return setError('End month is before the start month'), false;
+    return onSave({
+      fromId: form.fromId, toId: form.toId, amount: num(form.amount), currency: form.currency, monthly: !!form.monthly,
+      startMonth: form.startMonth, endMonth: form.monthly ? form.endMonth || '' : '', note: form.note.trim(),
+    });
+  };
+
+  return (
+    <FormModal
+      open={open}
+      title={record ? 'Edit Transfer' : 'Add Transfer'}
+      onClose={onClose}
+      onSubmit={save}
+      deleteLabel="Delete Transfer"
+      onDelete={record && (async () => confirmDelete(record.monthly ? 'this transfer from every month' : 'this transfer') && (await onDelete()) && onClose())}
+    >
+      <div className="grid grid-cols-2 gap-4">
+        <AccountSelect
+          label="From"
+          none={null}
+          value={form.fromId}
+          onChange={(fromId) => set({ fromId, currency: accounts.find((a) => a.id === fromId)?.currency || form.currency })}
+          accounts={accounts}
+        />
+        <AccountSelect label="To" none={null} value={form.toId} onChange={(toId) => set({ toId })} accounts={accounts} />
+        <Money label="Amount" value={form.amount} onChange={(amount) => set({ amount })} />
+        <CurrencySelect value={form.currency} onChange={(currency) => set({ currency })} currencies={currencies} />
+        <Field label={form.monthly ? 'From month' : 'Month'}>
+          <input type="month" className={inputClass} value={form.startMonth} onChange={(e) => set({ startMonth: e.target.value })} />
+        </Field>
+        {form.monthly ? (
+          <Field label="Until month">
+            <input type="month" className={inputClass} value={form.endMonth} onChange={(e) => set({ endMonth: e.target.value })} />
+          </Field>
+        ) : (
+          <div />
+        )}
+        <Field label="Note">
+          <input className={inputClass} value={form.note} onChange={(e) => set({ note: e.target.value })} placeholder="e.g. Rent set-aside" />
+        </Field>
+      </div>
+      <label className="flex items-center gap-3 p-3 rounded-xl border border-stone-200 bg-white cursor-pointer">
+        <input type="checkbox" className="w-4 h-4 accent-emerald-600" checked={!!form.monthly} onChange={(e) => set({ monthly: e.target.checked })} />
+        <span>
+          <span className="block text-sm font-semibold text-stone-900">Every month</span>
+          <span className="block text-xs text-stone-500">Repeats each month, like moving rent to savings after salary.</span>
+        </span>
+      </label>
+      <p className="text-xs text-stone-500">A transfer isn't income or an expense: it only moves money between the two balances.</p>
       {error && <p className="text-xs font-medium text-rose-600">{error}</p>}
     </FormModal>
   );
@@ -413,7 +689,7 @@ export function EntryForm({ open, record, defaults, currencies, onSave, onDelete
 
 /* ---------- Budget ---------- */
 
-export function BudgetForm({ open, record, currencies, defaultCurrency, usedCategories, onSave, onDelete, onClose }) {
+export function BudgetForm({ open, record, currencies, categoryLists, defaultCurrency, usedCategories, onSave, onDelete, onClose }) {
   const empty = { category: '', amount: '', currency: defaultCurrency };
   const [form, set, error, setError] = useForm(open, record, empty);
   const save = async () => {
@@ -432,12 +708,7 @@ export function BudgetForm({ open, record, currencies, defaultCurrency, usedCate
       deleteLabel="Delete Budget"
       onDelete={record && (async () => confirmDelete(`the ${record.category} budget`) && (await onDelete()) && onClose())}
     >
-      <Field label="Expense category">
-        <input autoFocus className={inputClass} list="wealth-budget-categories" value={form.category} onChange={(e) => set({ category: e.target.value })} />
-        <datalist id="wealth-budget-categories">
-          {EXPENSE_CATEGORIES.map((c) => <option key={c} value={c} />)}
-        </datalist>
-      </Field>
+      <CategorySelect autoFocus label="Expense category" value={form.category} onChange={(category) => set({ category })} categories={categoryLists.expense} />
       <div className="grid grid-cols-2 gap-4">
         <Money label="Monthly budget" value={form.amount} onChange={(amount) => set({ amount })} />
         <CurrencySelect value={form.currency} onChange={(currency) => set({ currency })} currencies={currencies} />

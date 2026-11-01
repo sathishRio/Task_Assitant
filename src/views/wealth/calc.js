@@ -49,12 +49,24 @@ export const EXPENSE_CATEGORIES = [
   'Shopping', 'Travel', 'Entertainment', 'Family support', LOAN_EMI, 'Other',
 ];
 
+// The user's category lists, falling back to the built-in ones.
+export const categoriesOf = (settings) => ({
+  income: settings.incomeCategories?.length ? settings.incomeCategories : INCOME_CATEGORIES,
+  expense: settings.expenseCategories?.length ? settings.expenseCategories : EXPENSE_CATEGORIES,
+});
+
 export const labelOf = (list, key) => list.find((x) => x.key === key)?.label || key;
 
 /* ---------- Dates ---------- */
 
 const pad = (n) => String(n).padStart(2, '0');
-export const monthOf = (dateStr) => dateStr.slice(0, 7);
+// Budget months run from the 25th to the 24th and are named after the month they end in:
+// "2026-11" covers 25 Oct – 24 Nov 2026.
+export const MONTH_START_DAY = 25;
+export const monthOf = (dateStr) => {
+  const month = dateStr.slice(0, 7);
+  return Number(dateStr.slice(8, 10)) >= MONTH_START_DAY ? addMonths(month, 1) : month;
+};
 export const thisMonth = () => monthOf(todayStr());
 export const addMonths = (month, n) => {
   const [y, m] = month.split('-').map(Number);
@@ -145,7 +157,8 @@ export function fdMaturity(asset) {
 }
 
 // Value today, in the asset's own currency.
-export const assetValue = (asset) => (isFd(asset) ? fdValueOn(asset, todayStr()) : asset.currentValue);
+// `balance` is set by withBalances for bank accounts that track their balance automatically.
+export const assetValue = (asset) => (isFd(asset) ? fdValueOn(asset, todayStr()) : asset.balance ?? asset.currentValue);
 
 // Money put in: principal + contributions − withdrawals. Return = value − money put in.
 export function assetPerformance(asset) {
@@ -246,6 +259,107 @@ export function monthTotals(entries, month, base, rates) {
 }
 
 // Average over the latest `count` months that have any entries, up to and including this month.
+// A fixed item with a range (e.g. utilities 300–500) counts as its midpoint.
+export const hasRange = (f) => f.amountMax != null && f.amountMax > f.amount;
+export const paymentAmount = (f) => (hasRange(f) ? (f.amount + f.amountMax) / 2 : f.amount);
+// Items paid every few months (quarterly, yearly) count as an even monthly share of each payment.
+export const fixedAmount = (f) => paymentAmount(f) / (f.every || 1);
+// Items not spread count the whole payment, but only in the months it is paid.
+export const isSpread = (f) => (f.every || 1) === 1 || f.spread !== false;
+export const FREQUENCIES = [
+  { key: 1, label: 'Monthly' }, { key: 2, label: 'Every 2 months' }, { key: 3, label: 'Every 3 months' },
+  { key: 6, label: 'Every 6 months' }, { key: 12, label: 'Yearly' },
+];
+
+// Fixed monthly items become one virtual entry per month they cover, from startMonth to
+// endMonth (or a year ahead when open-ended), so every total treats them like real entries.
+export function withFixed(entries, fixed = [], now = thisMonth()) {
+  const horizon = addMonths(now, 12);
+  const out = [...entries];
+  for (const f of fixed) {
+    const last = f.endMonth && f.endMonth < horizon ? f.endMonth : horizon;
+    const spread = isSpread(f);
+    const step = spread ? 1 : f.every;
+    for (let m = f.startMonth; m <= last; m = addMonths(m, step)) {
+      const { kind, category, currency, note, accountId } = f;
+      out.push({
+        accountId,
+        id: `fixed-${f.id}-${m}`, fixedId: f.id, month: m, kind, category, amount: spread ? fixedAmount(f) : paymentAmount(f), currency, note, recurring: true,
+        range: hasRange(f) ? [f.amount, f.amountMax] : null, every: spread ? f.every || 1 : 1,
+      });
+    }
+  }
+  return out;
+}
+
+// Each loan or installment plan with an EMI becomes a "Loan EMI" expense in every month it is paid:
+// from the month of its next payment date (this month when none is set) until its remaining months run
+// out, or a year ahead when the remaining months are not set. Paid-off loans (nothing outstanding) are skipped.
+export function withLiabilities(entries, liabilities = [], now = thisMonth()) {
+  const horizon = addMonths(now, 12);
+  const out = [...entries];
+  for (const l of liabilities) {
+    if (!(l.emi > 0) || !(l.outstanding > 0)) continue;
+    const next = l.nextPaymentDate ? monthOf(l.nextPaymentDate) : now;
+    const end = l.remainingMonths > 0 ? addMonths(next, l.remainingMonths - 1) : horizon;
+    const last = end < horizon ? end : horizon;
+    for (let m = next; m <= last; m = addMonths(m, 1)) {
+      out.push({
+        id: `emi-${l.id}-${m}`, liabilityId: l.id, month: m, kind: 'expense', category: LOAN_EMI,
+        amount: l.emi, currency: l.currency, note: l.name, recurring: true, accountId: l.accountId,
+      });
+    }
+  }
+  return out;
+}
+
+// Expected cash flow for the next `count` months, starting with this one. Fixed items and loan
+// EMIs are known per month; everything else ("variable") is the average of the last three months
+// with such entries. This month uses what is already recorded when that is more than the average.
+// Fixed items and EMIs come from `planned` (still expected) plus the statement lines that paid them this
+// month. Budgeted categories are planned at their budget each month (less any fixed item or EMI already in
+// that category), and are left out of the average used for the other expenses.
+export function projectCashflow(entries, planned_, count, base, rates, now = thisMonth(), budgets = []) {
+  const isFixed = (e) => e.fixedId || e.pays === 'fixed';
+  const isEmi = (e) => e.liabilityId || e.pays === 'emi';
+  const planned = (e) => isFixed(e) || isEmi(e);
+  const budgeted = new Set(budgets.map((b) => b.category));
+  const variable = entries.filter((e) => !planned(e) && !(e.kind === 'expense' && budgeted.has(e.category)));
+  const all = [...entries, ...planned_];
+  const past = [...new Set(variable.map((e) => e.month))].filter((m) => m < now).sort().reverse().slice(0, 3);
+  const sumOf = (list, kind) => list.filter((e) => e.kind === kind).reduce((s, e) => s + convert(e.amount, e.currency, base, rates), 0);
+  const avgOf = (kind) => (past.length ? past.reduce((s, m) => s + sumOf(variable.filter((e) => e.month === m), kind), 0) / past.length : 0);
+  const avg = { income: avgOf('income'), expense: avgOf('expense') };
+
+  const months = Array.from({ length: count }, (_, i) => addMonths(now, i)).map((month) => {
+    const inMonth = all.filter((e) => e.month === month);
+    const actual = variable.filter((e) => e.month === month);
+    const vary = (kind) => (month === now ? Math.max(sumOf(actual, kind), avg[kind]) : avg[kind]);
+    const row = {
+      month,
+      fixedIncome: sumOf(inMonth.filter(isFixed), 'income'),
+      fixedExpenses: sumOf(inMonth.filter(isFixed), 'expense'),
+      emis: sumOf(inMonth.filter(isEmi), 'expense'),
+      variableIncome: vary('income'),
+      variableExpenses: vary('expense'),
+      budgets: budgets.reduce((s, b) => {
+        const inCat = inMonth.filter((e) => e.kind === 'expense' && e.category === b.category);
+        const plan = Math.max(0, convert(b.amount, b.currency, base, rates) - sumOf(inCat.filter(planned), 'expense'));
+        // This month, spending already past the budget counts as it is.
+        return s + (month === now ? Math.max(plan, sumOf(inCat.filter((e) => !planned(e)), 'expense')) : plan);
+      }, 0),
+    };
+    row.income = row.fixedIncome + row.variableIncome;
+    row.expenses = row.fixedExpenses + row.emis + row.budgets + row.variableExpenses;
+    row.savings = row.income - row.expenses;
+    return row;
+  });
+  const keys = ['fixedIncome', 'variableIncome', 'income', 'fixedExpenses', 'emis', 'budgets', 'variableExpenses', 'expenses', 'savings'];
+  const total = Object.fromEntries(keys.map((k) => [k, months.reduce((s, m) => s + m[k], 0)]));
+  total.rate = total.income > 0 ? total.savings / total.income : NaN;
+  return { months, total, basedOn: past.length };
+}
+
 export function averageMonth(entries, base, rates, count = 3) {
   const now = thisMonth();
   const months = [...new Set(entries.map((e) => e.month))].filter((m) => m <= now).sort().reverse().slice(0, count);
@@ -259,9 +373,17 @@ export function expensesByCategory(entries, month, base, rates) {
   const map = new Map();
   for (const e of entries) {
     if (e.month !== month || e.kind !== 'expense') continue;
-    map.set(e.category, (map.get(e.category) || 0) + convert(e.amount, e.currency, base, rates));
+    const v = convert(e.amount, e.currency, base, rates);
+    const c = map.get(e.category) || { category: e.category, amount: 0, notes: new Map() };
+    c.amount += v;
+    // Lines with a note are listed under their category, same notes added together.
+    const note = e.note?.trim();
+    if (note) c.notes.set(note, (c.notes.get(note) || 0) + v);
+    map.set(e.category, c);
   }
-  return [...map].map(([category, amount]) => ({ category, amount })).sort((a, b) => b.amount - a.amount);
+  return [...map.values()]
+    .map((c) => ({ ...c, notes: [...c.notes].map(([note, amount]) => ({ note, amount })).sort((a, b) => b.amount - a.amount) }))
+    .sort((a, b) => b.amount - a.amount);
 }
 
 export function budgetVsActual(entries, budgets, month, base, rates) {
@@ -296,10 +418,17 @@ export function totals(data) {
   const rates = settings.rates;
   const byBucket = { cash: 0, investments: 0, property: 0 };
   const byType = {};
+  let reserved = 0;
   for (const a of assets) {
     const v = convert(assetValue(a), a.currency, base, rates);
-    byBucket[bucketOf(a.type)] += v;
-    byType[a.type] = (byType[a.type] || 0) + v;
+    // A fully set-aside asset, or the set-aside part of one (saved for later, or on hold this month),
+    // is left out of every total.
+    const held = isAccount(a) ? heldAmounts(a, data.planned || [], thisMonth(), rates, data.transactions || []).total : 0;
+    const aside = a.reserved ? v : Math.min(Math.max(convert((a.reservedAmount || 0) + held, a.currency, base, rates), 0), Math.max(v, 0));
+    reserved += aside;
+    if (aside === v) continue;
+    byBucket[bucketOf(a.type)] += v - aside;
+    byType[a.type] = (byType[a.type] || 0) + v - aside;
   }
   const { lent, borrowed } = debtTotals(data.debts, base, rates);
   const totalAssets = byBucket.cash + byBucket.investments + byBucket.property + lent;
@@ -317,6 +446,7 @@ export function totals(data) {
     totalLiabilities,
     netWorth: totalAssets - totalLiabilities,
     monthlyEmi,
+    reserved, // set aside for upcoming bills, left out of every total above
   };
 }
 
@@ -364,7 +494,7 @@ export function goalProgress(goal, netWorthInGoalCurrency) {
 // Month-by-month projection. Savings are added to investments each month and grow with them;
 // cash and money lent stay flat; property grows with inflation; each loan amortises with its
 // own EMI; money borrowed from people stays owed (it has no schedule).
-// Monthly savings are taken after EMIs (record EMIs as Loan EMI expenses so they are).
+// Monthly savings are taken after EMIs (liability EMIs are added to expenses automatically).
 export function forecast(data, t, avg, returnPct) {
   const { settings, liabilities, assets } = data;
   const base = settings.baseCurrency;
@@ -521,4 +651,151 @@ export function insights(data, t, base, rates) {
 
   const order = { critical: 0, warning: 1, info: 2, good: 3 };
   return out.sort((a, b) => order[a.tone] - order[b.tone]);
+}
+
+/* ---------- Accounts ---------- */
+
+// Bank assets are accounts: income and expenses can be paid into / out of them, and money moved
+// between them with transfers. Transfers are not income or expenses; they only move balances.
+export const isAccount = (a) => a.type === 'bank';
+// Tracked accounts keep their balance up to date from `balanceMonth` on (see withBalances).
+export const isTracked = (a) => isAccount(a) && !!a.balanceMonth;
+
+// Transfers that happen in a month: one-offs in their month, monthly ones in every month they cover.
+export const transfersIn = (transfers = [], month) =>
+  transfers.filter((t) => (t.monthly ? t.startMonth <= month && (!t.endMonth || t.endMonth >= month) : t.startMonth === month));
+
+// What moved through one account in a month, in the account's currency. Imported statement lines
+// of the account count too (and once there are any, they are all that counts): money in / out as income / expenses, and lines tagged Transfer or Card
+// payment as money moved. Lines tagged Already counted or Ignore are left out.
+export function accountMonth(account, entries, transfers, month, rates, transactions = []) {
+  const cur = account.currency;
+  const r = { income: 0, expenses: 0, received: 0, sent: 0 };
+  const ref = `asset:${account.id}`;
+  // With imported lines, only the statement counts: linked items (e.g. a fixed Rent) are on hold, not paid.
+  const fromStatement = hasLines(transactions, ref);
+  for (const e of entries) {
+    if (e.month !== month || (e.txnAccount !== ref && (fromStatement || e.accountId !== account.id))) continue;
+    r[e.kind === 'income' ? 'income' : 'expenses'] += convert(e.amount, e.currency, cur, rates);
+  }
+  for (const t of transactions) {
+    if (t.account !== ref || !['Transfer', 'Card payment'].includes(t.category) || monthOf(t.date) !== month) continue;
+    r[t.direction === 'in' ? 'received' : 'sent'] += convert(t.amount, t.currency, cur, rates);
+  }
+  for (const t of transfersIn(transfers, month)) {
+    if (t.toId === account.id) r.received += convert(t.amount, t.currency, cur, rates);
+    if (t.fromId === account.id) r.sent += convert(t.amount, t.currency, cur, rates);
+  }
+  r.net = r.income + r.received - r.expenses - r.sent;
+  return r;
+}
+
+// Balance of a tracked account: its balance at the start of `balanceMonth` plus every month's net
+// movement from then through `now`. Untracked assets keep the value typed in.
+export function withBalances(assets, entries, transfers, now, rates) {
+  return assets.map((a) => {
+    if (!isTracked(a) || a.balanceMonth > now) return a;
+    let balance = a.currentValue;
+    for (let m = a.balanceMonth; m <= now; m = addMonths(m, 1)) balance += accountMonth(a, entries, transfers, m, rates).net;
+    return { ...a, balance };
+  });
+}
+
+/* ---------- Statement transactions ---------- */
+
+// Accounts and cards with imported lines: the balance is the opening balance plus every line from the
+// opening date on, whatever its tag (tags only decide what counts as income or expenses).
+// Bank: money in adds, money out takes off. Card: spends add to the outstanding, payments take off.
+const lineNet = (transactions, ref, from) =>
+  transactions.filter((t) => t.account === ref && (!from || t.date >= from)).reduce((s, t) => s + (t.direction === 'in' ? t.amount : -t.amount), 0);
+const hasLines = (transactions, ref) => transactions.some((t) => t.account === ref);
+
+// Fixed expenses paid from an account (e.g. Rent paid from FAB) are put on hold from the 1st of their
+// month, on top of the account's default hold: the balance stays what the bank shows, and what is free to spend is the balance minus the hold.
+// Debits marked "from hold" that month are paid out of it, so they take it down (never below zero).
+export function heldAmounts(account, entries, now = thisMonth(), rates, transactions = []) {
+  const items = entries
+    .filter((e) => e.fixedId && e.kind === 'expense' && e.accountId === account.id && e.month === now)
+    .map((e) => ({ label: e.note || e.category, amount: convert(e.amount, e.currency, account.currency, rates) }));
+  if (account.holdAmount > 0) items.unshift({ label: 'Default hold', amount: account.holdAmount });
+  const ref = `asset:${account.id}`;
+  const paid = transactions
+    .filter((t) => t.fromHold && t.account === ref && t.direction === 'out' && monthOf(t.date) === now)
+    .reduce((s, t) => s + convert(t.amount, t.currency, account.currency, rates), 0);
+  if (paid > 0) items.push({ label: 'Paid from hold', amount: -paid });
+  return { items, total: Math.max(0, items.reduce((s, x) => s + x.amount, 0)) };
+}
+
+export function withStatementBalances(assets, liabilities, transactions = []) {
+  return {
+    assets: assets.map((a) => {
+      const ref = `asset:${a.id}`;
+      return isAccount(a) && hasLines(transactions, ref) ? { ...a, balance: (a.currentValue || 0) + lineNet(transactions, ref, a.openingDate) } : a;
+    }),
+    liabilities: liabilities.map((l) => {
+      const ref = `liability:${l.id}`;
+      if (l.type !== 'credit_card' || !hasLines(transactions, ref)) return l;
+      // The form edits the opening amount, so it is kept next to the running one.
+      return { ...l, openingOutstanding: l.outstanding, outstanding: Math.max((l.outstanding || 0) - lineNet(transactions, ref, l.openingDate), 0) };
+    }),
+  };
+}
+
+// Tags that are not income or expenses: the money only moves between your own accounts.
+// Same list as server/src/statements.js.
+export const EXCLUDED_TAGS = ['Transfer', 'Card payment', 'Already counted', 'Ignore'];
+export const UNTAGGED = 'Uncategorized';
+
+// Merchant of a statement line, for "tag all from this merchant". Same as server/src/statements.js.
+const PREFIX_RE = /^(DEBIT CARD PURCHASE|CREDIT CARD PURCHASE|CARD PURCHASE|POS PURCHASE|PURCHASE|E-?COM(MERCE)? PURCHASE|APPLE PAY|SAMSUNG PAY)\s*[-:]?\s*/i;
+export const merchantKey = (description) =>
+  description
+    .replace(PREFIX_RE, '')
+    .toUpperCase()
+    .replace(/[^A-Z& ]+/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length > 1 && !['LLC', 'THE', 'ARE', 'UAE', 'DXB', 'AUH', 'POS', 'PURCHASE'].includes(w))
+    .slice(0, 2)
+    .join(' ');
+
+// Imported statement lines count as income (money in) or expenses (money out) in their month,
+// under their tag. They carry no accountId, so tracked balances (kept from linked items and
+// transfers) are not changed by them.
+// What a line is linked to: a list ('fixed:<id>' / 'liability:<id>'); older lines saved a single string.
+export const linksOf = (t) => [].concat(t.linkTo || []).filter(Boolean);
+
+// Splits the month's money into what really happened and what is still expected:
+// - `entries`: entries added by hand plus imported statement lines (tags decide income or expense);
+// - `planned`: fixed items and loan EMIs not paid yet that month — used for the forecast and the hold only.
+// A plan counts as paid once a statement line is linked to it (any tag or amount), or, when nothing is
+// linked to it, a line of the same kind and tag (fixed items) or an EMI-tagged line within 2% of the EMI.
+// Lines that pay a plan carry `pays: 'fixed' | 'emi'` so the forecast keeps them out of the averages.
+export function splitPlanned(entries, transactions = [], rates) {
+  const isPlan = (e) => e.fixedId || e.liabilityId;
+  const lines = transactions
+    .filter((t) => !EXCLUDED_TAGS.includes(t.category))
+    .map((t) => ({
+      id: `txn-${t.id}`, txnId: t.id, month: monthOf(t.date), kind: t.direction === 'in' ? 'income' : 'expense',
+      category: t.category || UNTAGGED, amount: t.amount, currency: t.currency, note: t.description, txnAccount: t.account, links: linksOf(t),
+    }));
+  const keyOf = (e) => (e.fixedId ? `fixed:${e.fixedId}` : `liability:${e.liabilityId}`);
+  const used = new Set();
+  const payer = (e) => {
+    const inMonth = lines.filter((l) => l.month === e.month);
+    const linked = inMonth.filter((l) => l.links.includes(keyOf(e)));
+    if (linked.length) return linked;
+    if (e.fixedId) return inMonth.filter((l) => !l.links.length && l.kind === e.kind && l.category === e.category);
+    const l = inMonth.find((x) => !x.links.length && !used.has(x) && x.kind === 'expense' && x.category === LOAN_EMI && Math.abs(convert(x.amount, x.currency, e.currency, rates) - e.amount) <= e.amount * 0.02);
+    return l ? [l] : [];
+  };
+  const planned = [];
+  for (const e of entries.filter(isPlan)) {
+    const by = payer(e);
+    for (const l of by) {
+      used.add(l);
+      l.pays ||= e.fixedId ? 'fixed' : 'emi';
+    }
+    if (!by.length) planned.push(e);
+  }
+  return { entries: [...entries.filter((e) => !isPlan(e)), ...lines], planned };
 }

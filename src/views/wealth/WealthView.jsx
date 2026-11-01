@@ -1,33 +1,38 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ArrowDownLeft, ArrowRightLeft, ArrowUpRight, BadgeCheck, CalendarClock, ChartLine, CircleAlert, Coins, Copy, Flag, HandCoins, Handshake, Info, Landmark,
-  Eye, EyeOff, LoaderCircle, Pencil, PiggyBank, Plus, Receipt, RefreshCw, Scale, TrendingUp, TriangleAlert,
+  ArrowDownLeft, ArrowRightLeft, ArrowUpRight, BadgeCheck, CalendarClock, CircleCheck, Circle, ListChecks, ChevronDown, CreditCard, Mail, ChartLine, CircleAlert, Coins, Copy, Flag, HandCoins, Handshake, Info, Landmark,
+  Eye, EyeOff, LoaderCircle, Lock, LockOpen, Pencil, PiggyBank, Plus, Receipt, RefreshCw, Scale, Tags, Trash2, TrendingUp, TriangleAlert, X,
 } from 'lucide-react';
 import { useStore } from '../../store';
-import { wealthApi } from '../../api';
+import { ApiError, wealthApi } from '../../api';
+import { clearVaultSession, getVaultSession, lockVault, subscribeVault } from '../../vaultSession';
+import { SetupCard, UnlockModal } from '../VaultView';
 import { todayStr } from '../../dates';
-import { Badge, Button, Card, EmptyState, IconButton, ProgressBar, cx, inputClass, selectClass } from '../../ui';
+import { Badge, Button, Card, EmptyState, IconButton, Modal, ProgressBar, cx, inputClass, selectClass } from '../../ui';
 import { TONES } from '../../theme';
 import { Allocation, ColumnChart, LimitBar, LineChart, Legend, SERIES } from './charts';
-import { AssetForm, BudgetForm, DebtForm, EntryForm, GoalForm, LiabilityForm } from './WealthForms';
+import { AccountPanel, accountRef, useGmail } from './AccountPanel';
+import { AssetForm, BudgetForm, DebtForm, EntryForm, FixedForm, GoalForm, LiabilityForm, TransferForm } from './WealthForms';
 import {
   ASSET_TYPES, GOAL_TYPES, LIABILITY_TYPES, addMonths, assetPerformance, averageMonth, budgetVsActual, commitments, debtStatus,
-  convert, currenciesOf, expensesByCategory, fdMaturity, forecast, formatDay, formatMoney, formatMonth, formatPct, goalProgress,
-  insights, isFd, labelOf, loanPlan, monthTotals, netWorthSeries, prepayVsInvest, setMasked, thisMonth, totals,
+  convert, currenciesOf, expensesByCategory, fdMaturity, forecast, formatDay, formatMoney, formatMonth, formatPct, categoriesOf, goalProgress,
+  insights, isFd, labelOf, loanPlan, monthTotals, monthOf, netWorthSeries, prepayVsInvest, setMasked, thisMonth, totals, withFixed, withLiabilities, withBalances, withStatementBalances, splitPlanned, heldAmounts, accountMonth, assetValue, isAccount, isTracked, transfersIn, projectCashflow, fixedAmount, hasRange, isSpread, FREQUENCIES,
 } from './calc';
 
 // Wealth Management (#/wealth). Reachable by URL only: it is not in the header or account menu.
-// Its data is private to the signed-in account and loaded only when this page opens.
+// Its data is private to the signed-in account, encrypted with the vault PIN, and loaded only when this page opens.
 
 const TABS = [
   { key: 'overview', label: 'Overview', Icon: ChartLine },
   { key: 'assets', label: 'Assets', Icon: Landmark },
   { key: 'liabilities', label: 'Liabilities', Icon: Receipt },
-  { key: 'debts', label: 'Lent & Borrowed', Icon: Handshake },
   { key: 'cashflow', label: 'Income & Expenses', Icon: ArrowRightLeft },
-  { key: 'goals', label: 'Goals', Icon: Flag },
+  { key: 'accounts', label: 'Accounts & Cards', Icon: CreditCard },
   { key: 'forecast', label: 'Forecast', Icon: TrendingUp },
-  { key: 'currency', label: 'Currencies', Icon: Coins },
+  // `more`: always under the "More" dropdown.
+  { key: 'debts', label: 'Lent & Borrowed', Icon: Handshake, more: true },
+  { key: 'goals', label: 'Goals', Icon: Flag, more: true },
+  { key: 'currency', label: 'Currencies', Icon: Coins, more: true },
 ];
 const TAB_STORAGE = 'task-assistant/wealth-tab';
 const HIDE_STORAGE = 'task-assistant/wealth-hide';
@@ -72,53 +77,118 @@ const writePref = (key, value) => {
 
 /* ---------- Data hook ---------- */
 
+// Wealth data is encrypted with the vault key, so loading and saving need the vault unlocked.
+// The PIN is asked when the page opens, and again for a save once the unlock has expired.
+// When the unlock expires the decrypted data is dropped from the page.
 function useWealth() {
   const { actions } = useStore();
   const [data, setData] = useState(null);
   const [failed, setFailed] = useState(false);
+  const [state, setState] = useState('loading'); // loading | setup | locked | ready
+  const [prompt, setPrompt] = useState(null); // { reason, resolve }
+
+  // Runs fn(unlockToken), asking for the PIN first when the vault is locked (or the server says so).
+  // Resolves to null when the PIN prompt is cancelled.
+  const withUnlock = useCallback(async (reason, fn) => {
+    const ask = () => new Promise((resolve) => setPrompt({ reason, resolve }));
+    if (!getVaultSession() && !(await ask())) return null;
+    try {
+      return await fn(getVaultSession()?.token);
+    } catch (e) {
+      if (!(e instanceof ApiError) || e.status !== 423) throw e;
+      clearVaultSession();
+      if (!(await ask())) return null;
+      return fn(getVaultSession()?.token);
+    }
+  }, []);
 
   const load = useCallback(async () => {
     setFailed(false);
-    const result = await actions.run(() => wealthApi.load());
-    if (result) setData(result);
-    else setFailed(true);
-  }, [actions]);
+    setState('loading');
+    try {
+      const result = await withUnlock('Enter your PIN to decrypt your wealth data.', (t) => wealthApi.load(t));
+      if (result) {
+        setData(result);
+        setState('ready');
+      } else setState('locked');
+    } catch (e) {
+      if (e instanceof ApiError && e.data?.needsSetup) return setState('setup');
+      setState('ready');
+      setFailed(true);
+      actions.run(() => Promise.reject(e));
+    }
+  }, [actions, withUnlock]);
 
   useEffect(() => {
     load();
   }, [load]);
 
+  // Locking (expiry, "Lock now" in the vault, sign-out) hides the decrypted figures.
+  useEffect(
+    () =>
+      subscribeVault((s) => {
+        if (!s) {
+          setData(null);
+          setState((st) => (st === 'ready' ? 'locked' : st));
+        }
+      }),
+    [],
+  );
+
+  const saving = (fn) => actions.run(() => withUnlock('Enter your PIN to encrypt and save this change.', fn));
   const create = (collection) => async (payload) => {
-    const item = await actions.run(() => wealthApi.create(collection, payload));
-    if (item) setData((d) => ({ ...d, [collection]: [...(d[collection] || []), item] }));
+    const item = await saving((t) => wealthApi.create(t, collection, payload));
+    if (item) setData((d) => d && { ...d, [collection]: [...(d[collection] || []), item] });
     return item;
   };
   const update = (collection, id) => async (payload) => {
-    const item = await actions.run(() => wealthApi.update(collection, id, payload));
-    if (item) setData((d) => ({ ...d, [collection]: d[collection].map((x) => (x.id === id ? item : x)) }));
+    const item = await saving((t) => wealthApi.update(t, collection, id, payload));
+    if (item) setData((d) => d && { ...d, [collection]: d[collection].map((x) => (x.id === id ? item : x)) });
     return item;
   };
   const remove = (collection, id) => async () => {
-    const ok = await actions.run(() => wealthApi.remove(collection, id).then(() => true));
-    if (ok) setData((d) => ({ ...d, [collection]: d[collection].filter((x) => x.id !== id) }));
+    const ok = await saving((t) => wealthApi.remove(t, collection, id).then(() => true));
+    if (ok) setData((d) => d && { ...d, [collection]: d[collection].filter((x) => x.id !== id) });
     return ok;
   };
   const saveSettings = async (patch) => {
-    const settings = await actions.run(() => wealthApi.saveSettings(patch));
-    if (settings) setData((d) => ({ ...d, settings }));
+    const settings = await saving((t) => wealthApi.saveSettings(t, patch));
+    if (settings) setData((d) => d && { ...d, settings });
     return settings;
   };
   const saveSnapshot = useCallback(async (month, payload) => {
-    // Quiet background save: no toast if it fails, it is retried on the next change.
+    // Quiet background save: never asks for the PIN, and is retried on the next change.
+    const session = getVaultSession();
+    if (!session) return;
     try {
-      const snap = await wealthApi.saveSnapshot(month, payload);
-      setData((d) => ({ ...d, snapshots: [...d.snapshots.filter((s) => s.month !== month), snap] }));
+      const snap = await wealthApi.saveSnapshot(session.token, month, payload);
+      setData((d) => d && { ...d, snapshots: [...d.snapshots.filter((s) => s.month !== month), snap] });
     } catch {
       // ignore
     }
   }, []);
 
-  return { data, failed, load, create, update, remove, saveSettings, saveSnapshot };
+  const answer = (ok) => {
+    prompt?.resolve(ok);
+    setPrompt(null);
+  };
+
+  // Adds or replaces records (by id) returned by the statement / Gmail calls.
+  const merge = useCallback((collection, items) => {
+    if (!items?.length) return;
+    setData((d) => {
+      if (!d) return d;
+      const byId = new Map(items.map((x) => [x.id, x]));
+      const kept = (d[collection] || []).map((x) => byId.get(x.id) || x);
+      const known = new Set(kept.map((x) => x.id));
+      return { ...d, [collection]: [...kept, ...items.filter((x) => !known.has(x.id))] };
+    });
+  }, []);
+  // `call` shows errors as a toast; `raw` leaves them to the caller (e.g. "needs a password").
+  const call = (fn) => saving(fn);
+  const raw = (fn) => withUnlock('Enter your PIN to continue.', fn);
+
+  return { data, failed, state, prompt, answer, load, create, update, remove, saveSettings, saveSnapshot, merge, call, raw, lock: lockVault };
 }
 
 /* ---------- Page ---------- */
@@ -139,20 +209,54 @@ export default function WealthView() {
     writePref(HIDE_STORAGE, hide ? '' : '1');
   };
 
-  if (!w.data) {
-    return w.failed ? (
-      <Card className="max-w-md mx-auto mt-16 p-6 text-center">
-        <h1 className="text-xl font-bold">Can't load your wealth data</h1>
-        <p className="text-sm text-stone-500 mt-1">Check that the server is running and up to date.</p>
-        <Button icon={RefreshCw} onClick={w.load} className="mt-5">Try again</Button>
-      </Card>
-    ) : (
-      <div className="flex justify-center mt-24">
-        <LoaderCircle className="w-8 h-8 text-ink animate-spin" />
+  const pin = <UnlockModal open={!!w.prompt} reason={w.prompt?.reason} onUnlocked={() => w.answer(true)} onClose={() => w.answer(false)} />;
+  if (w.state === 'setup') {
+    return (
+      <div>
+        <p className="max-w-lg mx-auto text-sm text-stone-600 text-center">
+          Your wealth data is encrypted with your vault PIN. Create the PIN to continue; it also protects your password vault.
+        </p>
+        <SetupCard onDone={w.load} />
       </div>
     );
   }
-  return <WealthPage w={w} tab={tab} setTab={setTab} hide={hide} toggleHide={toggleHide} />;
+  if (w.state === 'locked') {
+    return (
+      <Card className="max-w-md mx-auto mt-16 p-6 text-center">
+        <span className="inline-flex w-12 h-12 rounded-2xl bg-emerald-50 border border-emerald-200 items-center justify-center">
+          <Lock className="w-5 h-5 text-emerald-700" />
+        </span>
+        <h1 className="text-xl font-bold mt-3">Wealth is locked</h1>
+        <p className="text-sm text-stone-500 mt-1">Your figures are encrypted. Enter your vault PIN to decrypt them.</p>
+        <Button icon={LockOpen} onClick={w.load} className="mt-5">Unlock</Button>
+        {pin}
+      </Card>
+    );
+  }
+  if (!w.data) {
+    return (
+      <>
+        {w.failed ? (
+          <Card className="max-w-md mx-auto mt-16 p-6 text-center">
+            <h1 className="text-xl font-bold">Can't load your wealth data</h1>
+            <p className="text-sm text-stone-500 mt-1">Check that the server is running and up to date.</p>
+            <Button icon={RefreshCw} onClick={w.load} className="mt-5">Try again</Button>
+          </Card>
+        ) : (
+          <div className="flex justify-center mt-24">
+            <LoaderCircle className="w-8 h-8 text-ink animate-spin" />
+          </div>
+        )}
+        {pin}
+      </>
+    );
+  }
+  return (
+    <>
+      <WealthPage w={w} tab={tab} setTab={setTab} hide={hide} toggleHide={toggleHide} />
+      {pin}
+    </>
+  );
 }
 
 function WealthPage({ w, tab, setTab, hide, toggleHide }) {
@@ -160,14 +264,27 @@ function WealthPage({ w, tab, setTab, hide, toggleHide }) {
   setMasked(hide);
   useEffect(() => () => setMasked(false), []);
 
-  const { data } = w;
+  const now = thisMonth();
+  // Fixed monthly items are spread into every month they cover, so all tabs count them; tracked bank
+  // accounts get their balance from the income, expenses and transfers linked to them.
+  const data = useMemo(() => {
+    const linked = withLiabilities(withFixed(w.data.entries, w.data.fixed, now), w.data.liabilities, now);
+    const transfers = w.data.transfers || [];
+    const transactions = w.data.transactions || [];
+    const { assets, liabilities } = withStatementBalances(withBalances(w.data.assets, linked, transfers, now, w.data.settings.rates), w.data.liabilities, transactions);
+    // Month figures come from statement lines and hand-added entries only; fixed items and EMIs are
+    // expected amounts (`planned`) for the forecast and the hold until a line pays them. `schedule` keeps
+    // every fixed item's due share per month, paid or not.
+    const { entries, planned } = splitPlanned(linked, transactions, w.data.settings.rates);
+    const schedule = linked.filter((e) => e.fixedId || e.liabilityId);
+    return { ...w.data, fixed: w.data.fixed || [], transfers, transactions, sources: w.data.sources || [], entries, planned, schedule, assets, liabilities };
+  }, [w.data, now]);
   const { settings } = data;
   const base = settings.baseCurrency;
   const rates = settings.rates;
   const currencies = currenciesOf(settings);
   const money = (x, opts) => formatMoney(x, base, opts);
   const t = useMemo(() => totals(data), [data]);
-  const now = thisMonth();
   const avg = useMemo(() => averageMonth(data.entries, base, rates), [data.entries, base, rates]);
   const notes = insights(data, t, base, rates);
   const attention = notes.filter((n) => n.tone === 'critical' || n.tone === 'warning').length;
@@ -187,7 +304,9 @@ function WealthPage({ w, tab, setTab, hide, toggleHide }) {
     return () => clearTimeout(timer);
   }, [stored, base, now, t.totalAssets, t.totalLiabilities, saveSnapshot]);
 
-  const ctx = { w, data, settings, base, rates, currencies, money, t, avg, now, notes, cover };
+  // The account or card open in the side panel ({ ref, kind }), shared so other tabs can open one.
+  const [panel, setPanel] = useState(null);
+  const ctx = { w, setTab, data, settings, base, rates, currencies, money, t, avg, now, notes, cover, panel, setPanel };
   const today = new Date().toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'short' });
 
   return (
@@ -219,29 +338,15 @@ function WealthPage({ w, tab, setTab, hide, toggleHide }) {
             {attention ? `${attention} thing${attention === 1 ? ' needs' : 's need'} a look` : 'Nothing needs your attention'}
           </p>
         </div>
-        <Button variant="soft" icon={hide ? Eye : EyeOff} className="px-4 py-2.5 text-sm" onClick={toggleHide} aria-pressed={hide}>
-          {hide ? 'Show amounts' : 'Hide amounts'}
-        </Button>
+        <div className="flex gap-2">
+          <Button variant="soft" icon={hide ? Eye : EyeOff} className="px-4 py-2.5 text-sm" onClick={toggleHide} aria-pressed={hide}>
+            {hide ? 'Show amounts' : 'Hide amounts'}
+          </Button>
+          <Button variant="soft" icon={Lock} className="px-4 py-2.5 text-sm" onClick={w.lock}>Lock</Button>
+        </div>
       </div>
 
-      <div className="flex gap-2 overflow-x-auto -mx-1 px-1 pt-1 pb-2" role="tablist">
-        {TABS.map(({ key, label, Icon }) => (
-          <button
-            key={key}
-            type="button"
-            role="tab"
-            aria-selected={tab === key}
-            onClick={() => setTab(key)}
-            className={cx(
-              'shrink-0 inline-flex items-center gap-2 px-3.5 py-2 rounded-[10px] border-[1.5px] font-mono text-[11px] font-semibold uppercase tracking-wider transition',
-              tab === key ? 'bg-taxi border-ink text-ink shadow-key' : 'bg-white border-stone-300 text-stone-600 hover:border-ink hover:text-ink',
-            )}
-          >
-            <Icon className="w-3.5 h-3.5" />
-            {label}
-          </button>
-        ))}
-      </div>
+      <TabBar tab={tab} setTab={setTab} />
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <Stat
@@ -273,6 +378,7 @@ function WealthPage({ w, tab, setTab, hide, toggleHide }) {
       {tab === 'liabilities' && <Liabilities {...ctx} />}
       {tab === 'debts' && <Debts {...ctx} />}
       {tab === 'cashflow' && <CashFlow {...ctx} />}
+      {tab === 'accounts' && <AccountsTab {...ctx} />}
       {tab === 'goals' && <Goals {...ctx} />}
       {tab === 'forecast' && <Forecast {...ctx} />}
       {tab === 'currency' && <Currencies {...ctx} />}
@@ -282,20 +388,153 @@ function WealthPage({ w, tab, setTab, hide, toggleHide }) {
 
 /* ---------- Shared bits ---------- */
 
+// Tabs that fit on one line; the rest (and tabs marked `more`) go under "More", so the bar never
+// scrolls sideways.
+const MAIN_TABS = TABS.filter((t) => !t.more);
+const MORE_TABS = TABS.filter((t) => t.more);
+const tabClass = (active) =>
+  cx(
+    'shrink-0 inline-flex items-center gap-2 px-3.5 py-2 rounded-[10px] border-[1.5px] font-mono text-[11px] font-semibold uppercase tracking-wider transition',
+    active ? 'bg-taxi border-ink text-ink shadow-key' : 'bg-white border-stone-300 text-stone-600 hover:border-ink hover:text-ink',
+  );
+const TAB_GAP = 8;
+
+function TabBar({ tab, setTab }) {
+  const barRef = useRef(null);
+  const measureRef = useRef(null);
+  const [fit, setFit] = useState(MAIN_TABS.length);
+  const [open, setOpen] = useState(false);
+
+  // Widths come from an invisible copy of every tab (plus "More"), so they are known before layout.
+  useEffect(() => {
+    const bar = barRef.current;
+    const measure = measureRef.current;
+    if (!bar || !measure) return;
+    const update = () => {
+      const widths = [...measure.children].map((el) => el.offsetWidth);
+      const more = widths.pop();
+      const avail = bar.clientWidth;
+      let used = 0;
+      let n = 0;
+      for (; n < widths.length; n++) {
+        const next = used + widths[n] + (n ? TAB_GAP : 0);
+        const room = n === widths.length - 1 && !MORE_TABS.length ? avail : avail - more - TAB_GAP;
+        if (next > room) break;
+        used = next;
+      }
+      setFit(Math.max(n, 1));
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(bar);
+    return () => ro.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = () => setOpen(false);
+    const onKey = (e) => e.key === 'Escape' && close();
+    document.addEventListener('click', close);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('click', close);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  const shown = MAIN_TABS.slice(0, fit);
+  const extra = [...MORE_TABS, ...MAIN_TABS.slice(fit)];
+  const activeExtra = extra.find((x) => x.key === tab);
+  const Tab = ({ t }) => (
+    <button type="button" role="tab" aria-selected={tab === t.key} onClick={() => setTab(t.key)} className={tabClass(tab === t.key)}>
+      <t.Icon className="w-3.5 h-3.5" />
+      {t.label}
+    </button>
+  );
+
+  return (
+    <div ref={barRef} className="relative pt-1 pb-2">
+      <div ref={measureRef} aria-hidden className="absolute left-0 top-0 w-0 h-0 overflow-hidden invisible pointer-events-none flex gap-2 whitespace-nowrap">
+        {MAIN_TABS.map((t) => (
+          <span key={t.key} className={tabClass(false)}>
+            <t.Icon className="w-3.5 h-3.5" />
+            {t.label}
+          </span>
+        ))}
+        <span className={tabClass(false)}>
+          More <ChevronDown className="w-3.5 h-3.5" />
+        </span>
+      </div>
+      <div className="flex gap-2" role="tablist">
+        {shown.map((t) => <Tab key={t.key} t={t} />)}
+        {extra.length > 0 && (
+          <div className="relative">
+            <button
+              type="button"
+              aria-haspopup="menu"
+              aria-expanded={open}
+              onClick={(e) => {
+                e.stopPropagation();
+                setOpen((o) => !o);
+              }}
+              className={tabClass(!!activeExtra)}
+            >
+              {activeExtra ? <activeExtra.Icon className="w-3.5 h-3.5" /> : null}
+              {activeExtra ? activeExtra.label : 'More'}
+              <ChevronDown className={cx('w-3.5 h-3.5 transition-transform', open && 'rotate-180')} />
+            </button>
+            {open && (
+              <div role="menu" className="absolute right-0 z-30 mt-1 min-w-48 rounded-xl border-[1.5px] border-ink bg-white shadow-block p-1">
+                {extra.map((t) => (
+                  <button
+                    key={t.key}
+                    type="button"
+                    role="menuitem"
+                    onClick={() => setTab(t.key)}
+                    className={cx(
+                      'w-full flex items-center gap-2 px-3 py-2 rounded-lg font-mono text-[11px] font-semibold uppercase tracking-wider text-left',
+                      tab === t.key ? 'bg-taxi text-ink' : 'text-stone-600 hover:bg-stone-100 hover:text-ink',
+                    )}
+                  >
+                    <t.Icon className="w-3.5 h-3.5" />
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // Panel with a title bar, as on the Home page. `block` = ink outline + hard shadow for the panels
 // that should stand out, `tint` (a TINTS key) colours the whole panel, `chip` shows a count or total.
-function Section({ title, icon: Icon, action, children, className, subtitle, block, tint, chip, flush }) {
+// `collapsible` adds a show/hide toggle on the title; it starts collapsed unless `defaultOpen`.
+function Section({ title, icon: Icon, action, children, className, subtitle, block, tint, chip, flush, collapsible, defaultOpen = false }) {
   const tone = TINTS[tint];
+  const [open, setOpen] = useState(!collapsible || defaultOpen);
+  const heading = (
+    <>
+      <h2 className="flex items-center gap-2 text-lg font-bold text-ink">
+        {Icon && <Icon className="w-5 h-5 shrink-0" />}
+        {title}
+        {collapsible && <ChevronDown className={cx('w-4 h-4 shrink-0 text-stone-400 transition-transform', open && 'rotate-180')} />}
+      </h2>
+      {subtitle && <p className="text-xs text-stone-500 mt-0.5">{subtitle}</p>}
+    </>
+  );
   return (
     <Card block={block} className={cx('overflow-hidden', tone?.[0], className)}>
-      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 border-b-[1.5px] border-stone-200">
-        <div className="min-w-0">
-          <h2 className="flex items-center gap-2 text-lg font-bold text-ink">
-            {Icon && <Icon className="w-5 h-5 shrink-0" />}
-            {title}
-          </h2>
-          {subtitle && <p className="text-xs text-stone-500 mt-0.5">{subtitle}</p>}
-        </div>
+      <div className={cx('flex flex-wrap items-center justify-between gap-3 px-4 py-3', open && 'border-b-[1.5px] border-stone-200')}>
+        {collapsible ? (
+          <button type="button" aria-expanded={open} onClick={() => setOpen((o) => !o)} className="min-w-0 flex-1 text-left">
+            {heading}
+          </button>
+        ) : (
+          <div className="min-w-0">{heading}</div>
+        )}
         <div className="flex flex-wrap items-center gap-2">
           {chip !== undefined && (
             <span className={cx('font-mono text-[11px] font-semibold rounded-md px-2 py-0.5 tabular-nums', tone ? tone[1] : 'bg-stone-100 text-stone-700')}>{chip}</span>
@@ -303,7 +542,7 @@ function Section({ title, icon: Icon, action, children, className, subtitle, blo
           {action}
         </div>
       </div>
-      <div className={flush ? undefined : 'p-4 sm:p-5'}>{children}</div>
+      {open && <div className={flush ? undefined : 'p-4 sm:p-5'}>{children}</div>}
     </Card>
   );
 }
@@ -528,6 +767,9 @@ function Assets({ w, data, base, rates, currencies, money, t }) {
             </div>
           ))}
         </div>
+        {t.reserved > 0 && (
+          <p className="text-[11px] text-stone-500 -mt-2 mb-3">{money(t.reserved)} set aside for upcoming bills is not counted in these totals or net worth.</p>
+        )}
         {sorted.length === 0 ? (
           <EmptyState icon={Landmark} title="No assets yet" text="Add a bank balance or investment to start tracking your net worth." />
         ) : (
@@ -548,6 +790,7 @@ function Assets({ w, data, base, rates, currencies, money, t }) {
                       <span className="w-2.5 h-2.5 rounded-[3px] shrink-0" style={{ backgroundColor: TYPE_COLOR[a.type] }} />
                       <span className="text-sm font-semibold text-ink truncate">{a.name}</span>
                       <Badge>{labelOf(ASSET_TYPES, a.type)}</Badge>
+                      {a.reserved && <Badge tone={TONES.amber}>Set aside · not counted</Badge>}
                       {a.interestRate > 0 && <Badge tone={TONES.blue}>{a.interestRate}% p.a.</Badge>}
                     </div>
                     <div className="text-xs text-stone-500 mt-1 space-x-3">
@@ -665,6 +908,7 @@ function Liabilities({ w, data, settings, base, rates, currencies, money, t }) {
         record={ed.record}
         currencies={currencies}
         defaultCurrency={base}
+        accounts={data.assets.filter(isAccount)}
         onSave={ed.record ? w.update('liabilities', ed.record.id) : w.create('liabilities')}
         onDelete={ed.record && w.remove('liabilities', ed.record.id)}
         onClose={ed.close}
@@ -875,31 +1119,100 @@ function Debts({ w, data, base, rates, currencies, money, t }) {
 
 /* ---------- Income & expenses ---------- */
 
-function CashFlow({ w, data, base, rates, currencies, money, now }) {
+function CashFlow({ w, setTab, data, base, rates, currencies, money, now, setPanel }) {
   const [month, setMonth] = useState(now);
   const entryEd = useEditor();
   const budgetEd = useEditor();
+  const fixedEd = useEditor();
+  // A fixed expense becomes a monthly budget for its category (added to the budget if there is one), then is deleted.
+  const moveToBudget = async (f) => {
+    const amount = fixedAmount(f);
+    const existing = data.budgets.find((b) => b.category === f.category);
+    const total = existing ? existing.amount + convert(amount, f.currency, existing.currency, rates) : amount;
+    const what = existing ? `add ${formatMoney(amount, f.currency)} a month to the ${f.category} budget (${formatMoney(total, existing.currency)})` : `create a ${f.category} budget of ${formatMoney(amount, f.currency)} a month`;
+    if (!window.confirm(`Move this fixed expense to budgets? This will ${what} and delete the fixed item.`)) return false;
+    const saved = existing ? await w.update('budgets', existing.id)({ amount: Math.round(total * 100) / 100 }) : await w.create('budgets')({ category: f.category, amount: Math.round(amount * 100) / 100, currency: f.currency });
+    return saved && (await w.remove('fixed', f.id)());
+  };
+  const accounts = data.assets.filter(isAccount);
+  const categoryLists = categoriesOf(data.settings);
   const [kind, setKind] = useState('expense');
   const tot = monthTotals(data.entries, month, base, rates);
-  const cats = expensesByCategory(data.entries, month, base, rates);
+  // The chart and "Where the money went" also count fixed items and loan EMIs not paid yet, since they are due every month.
+  const flow = [...data.entries, ...data.planned];
+  const cats = expensesByCategory(flow, month, base, rates);
+  const catsTotal = cats.reduce((s, c) => s + c.amount, 0);
+  const [catPopup, setCatPopup] = useState(null);
   const bva = budgetVsActual(data.entries, data.budgets, month, base, rates);
   const commit = commitments(data.entries, data.liabilities, month, base, rates);
   const entries = data.entries.filter((e) => e.month === month).sort((a, b) => a.kind.localeCompare(b.kind) || b.amount - a.amount);
   // The last six months, unless the picked month falls outside them; clicking a column picks that month.
   const end = month > now || month < addMonths(now, -5) ? month : now;
   const history = Array.from({ length: 6 }, (_, i) => addMonths(end, i - 5)).map((m) => {
-    const x = monthTotals(data.entries, m, base, rates);
+    const x = monthTotals(flow, m, base, rates);
     return { month: m, label: formatMonth(m, true), income: x.income, expenses: x.expenses, savings: x.savings };
   });
   const overBudget = new Set(bva.filter((b) => b.over).map((b) => b.category));
-  const prevRecurring = data.entries.filter((e) => e.month === addMonths(month, -1) && e.recurring);
+  const prevRecurring = data.entries.filter((e) => e.month === addMonths(month, -1) && e.recurring && !e.fixedId);
   const [copying, setCopying] = useState(false);
+  const [checklistOpen, setChecklistOpen] = useState(false);
+  // One row per expense marked "include in monthly checklist" (same category + note), using its latest amount.
+  // Done when this month already has an expense with the same category and note.
+  const checklist = useMemo(() => {
+    const key = (e) => `${e.category}|${(e.note || '').trim().toLowerCase()}`;
+    const items = new Map();
+    for (const e of data.entries) {
+      if (!e.checklist || e.kind !== 'expense' || e.txnId) continue;
+      const prev = items.get(key(e));
+      if (!prev || e.month > prev.month) items.set(key(e), e);
+    }
+    const done = new Map(data.entries.filter((e) => e.month === month && e.kind === 'expense').map((e) => [key(e), e]));
+    // Fixed expenses are already counted every month they are due, so they are ticked off rather than added.
+    const fixed = data.fixed
+      .filter((f) => f.checklist && f.kind === 'expense')
+      .map((f) => [f, data.schedule.find((e) => e.fixedId === f.id && e.month === month)])
+      .filter(([, due]) => due)
+      // This month's share (quarterly or yearly payments spread across the months), as counted in the totals.
+      .map(([f, due]) => ({ item: { ...f, amount: due.amount }, fixed: f, entry: (f.checkedMonths || []).includes(month) ? { ...f, amount: due.amount } : null }));
+    return [...[...items.values()].map((e) => ({ item: e, entry: done.get(key(e)) })), ...fixed]
+      .sort((a, b) => !!a.entry - !!b.entry || a.item.category.localeCompare(b.item.category));
+  }, [data.entries, data.schedule, data.fixed, month]);
+  const planned = checklist.reduce((s, c) => s + convert(c.entry ? c.entry.amount : c.item.amount, (c.entry || c.item).currency, base, rates), 0);
+  const toggleFixed = (f) => {
+    const months = f.checkedMonths || [];
+    w.update('fixed', f.id)({ ...f, checkedMonths: months.includes(month) ? months.filter((m) => m !== month) : [...months, month] });
+  };
+  // Ticking adds this month's expense; unticking removes it again. Fixed expenses only toggle their paid mark.
+  const toggleChecklist = async ({ item, entry, fixed }) => {
+    if (fixed) return toggleFixed(fixed);
+    if (!entry) return addFromChecklist(item);
+    if (entry.txnId) return;
+    setCopying(true);
+    await w.remove('entries', entry.id)();
+    setCopying(false);
+  };
+  const addFromChecklist = async (e) => {
+    setCopying(true);
+    const { category, amount, currency, note, accountId, recurring } = e;
+    await w.create('entries')({ month, kind: 'expense', category, amount, currency, note, accountId, recurring, checklist: true });
+    setCopying(false);
+  };
+  // Entries recorded by hand in this month (not fixed items or loan EMIs).
+  const movable = data.entries.filter((e) => e.month === month && !e.fixedId && !e.liabilityId);
+  // Deletes the entries recorded in this month. Fixed items and loan EMIs span many months, so they stay.
+  const clearMonth = async () => {
+    const n = movable.length;
+    if (!window.confirm(`Delete all ${n} entr${n === 1 ? 'y' : 'ies'} recorded in ${formatMonth(month)}? This cannot be undone.\n\nFixed items and loan EMIs are not affected.`)) return;
+    setCopying(true);
+    for (const e of movable) if (!(await w.remove('entries', e.id)())) break;
+    setCopying(false);
+  };
 
   const copyRecurring = async () => {
     setCopying(true);
     for (const e of prevRecurring) {
-      const { kind: k, category, amount, currency, note } = e;
-      await w.create('entries')({ month, kind: k, category, amount, currency, note, recurring: true });
+      const { kind: k, category, amount, currency, note, accountId } = e;
+      await w.create('entries')({ month, kind: k, category, amount, currency, note, accountId, recurring: true });
     }
     setCopying(false);
   };
@@ -916,13 +1229,23 @@ function CashFlow({ w, data, base, rates, currencies, money, now }) {
           <input type="month" className={cx(selectClass, 'py-1.5!')} value={month} onChange={(e) => e.target.value && setMonth(e.target.value)} />
         </label>
         <div className="flex flex-wrap gap-2 sm:ml-auto">
-          {prevRecurring.length > 0 && !entries.some((e) => e.recurring) && (
+          {prevRecurring.length > 0 && !entries.some((e) => e.recurring && !e.fixedId) && (
             <Button variant="soft" icon={Copy} disabled={copying} onClick={copyRecurring}>
               Copy {prevRecurring.length} recurring from {formatMonth(addMonths(month, -1), true)}
             </Button>
           )}
+          {movable.length > 0 && (
+            <Button variant="soft" icon={Trash2} disabled={copying} onClick={clearMonth} className="text-rose-700!">
+              Clear {formatMonth(month, true)}
+            </Button>
+          )}
           <Button variant="soft" icon={Plus} onClick={() => addEntry('income')}>Income</Button>
           <Button icon={Plus} onClick={() => addEntry('expense')}>Expense</Button>
+          <Button variant="soft" icon={CalendarClock} onClick={() => fixedEd.start({ kind: 'income', new: true })}>Fixed Income</Button>
+          <Button variant="soft" icon={CalendarClock} onClick={() => fixedEd.start({ kind: 'expense', new: true })}>Fixed Expense</Button>
+          <Button variant="soft" icon={ListChecks} onClick={() => setChecklistOpen(true)}>
+            Checklist{checklist.length > 0 && ` ${checklist.filter((c) => c.entry).length}/${checklist.length}`}
+          </Button>
         </div>
       </Card>
 
@@ -965,23 +1288,17 @@ function CashFlow({ w, data, base, rates, currencies, money, now }) {
           {cats.length ? (
             <div className="space-y-2.5">
               {cats.map((c, i) => (
-                <div key={c.category}>
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="font-semibold text-ink">
-                      {c.category}
-                      {overBudget.has(c.category) && (
-                        <span className="ml-2 rounded px-1.5 py-px bg-rose-600 text-white font-mono text-[9px] font-semibold uppercase tracking-wider">Over budget</span>
-                      )}
-                      {i === 0 && cats.length > 1 && <span className="ml-2 font-mono text-[10px] uppercase text-stone-500">Largest</span>}
-                    </span>
-                    <span className="tabular-nums text-stone-700">
-                      {money(c.amount)} · {formatPct(c.amount / tot.expenses, 0)}
-                    </span>
-                  </div>
-                  <div className="mt-1">
-                    <ProgressBar thin percent={(c.amount / cats[0].amount) * 100} color={overBudget.has(c.category) ? '#d93a2b' : '#4c76ff'} />
-                  </div>
-                </div>
+                <CategoryRow
+                  key={c.category}
+                  c={c}
+                  share={c.amount / catsTotal}
+                  width={(c.amount / cats[0].amount) * 100}
+                  largest={i === 0 && cats.length > 1}
+                  over={overBudget.has(c.category)}
+                  money={money}
+                  open={catPopup?.category === c.category ? catPopup.spot : null}
+                  setOpen={(spot) => setCatPopup(spot && { category: c.category, spot })}
+                />
               ))}
             </div>
           ) : (
@@ -990,11 +1307,12 @@ function CashFlow({ w, data, base, rates, currencies, money, now }) {
         </Section>
       </div>
 
-      <div className="grid lg:grid-cols-2 gap-4">
         <Section
+          collapsible
           title="Budget vs actual"
           icon={Scale}
           subtitle={formatMonth(month)}
+          chip={bva.length ? `${money(bva.reduce((t, b) => t + b.spent, 0))} of ${money(bva.reduce((t, b) => t + b.budget, 0))}` : undefined}
           action={<Button variant="ghost" icon={Plus} onClick={() => budgetEd.start('new')}>Budget</Button>}
         >
           {bva.length ? (
@@ -1029,7 +1347,7 @@ function CashFlow({ w, data, base, rates, currencies, money, now }) {
             <EmptyState text="Set monthly budgets per expense category to compare against actual spending." />
           )}
         </Section>
-        <Section title="Monthly commitments" icon={CalendarClock} subtitle="Loan EMIs plus recurring expenses.">
+        <Section collapsible title="Monthly commitments" icon={CalendarClock} subtitle="Loan EMIs plus recurring expenses." chip={commit.items.length ? money(commit.total) : undefined}>
           {commit.items.length ? (
             <>
               <div className="divide-y divide-stone-100">
@@ -1053,20 +1371,73 @@ function CashFlow({ w, data, base, rates, currencies, money, now }) {
             <EmptyState text="No loans with an EMI and no recurring expenses this month." />
           )}
         </Section>
-      </div>
 
-      <Section title={`Entries · ${formatMonth(month)}`} icon={Receipt}>
+      <Section
+        collapsible
+        chip={data.fixed.length || undefined}
+        title="Fixed every month"
+        icon={CalendarClock}
+        subtitle="Salary, rent, subscriptions: set once, counted in every month automatically."
+        action={
+          <div className="flex gap-1">
+            <Button variant="ghost" icon={Plus} onClick={() => fixedEd.start({ kind: 'income', new: true })}>Income</Button>
+            <Button variant="ghost" icon={Plus} onClick={() => fixedEd.start({ kind: 'expense', new: true })}>Expense</Button>
+            <Button variant="ghost" icon={Plus} onClick={() => fixedEd.start({ kind: 'expense', every: 12, new: true })}>Yearly / Quarterly</Button>
+          </div>
+        }
+      >
+        {data.fixed.length ? (
+          <>
+            <div className="divide-y divide-stone-200 -mx-4 sm:-mx-5">
+              {data.fixed.map((f) => (
+                <button key={f.id} type="button" onClick={() => fixedEd.start(f)} className="w-full text-left px-4 sm:px-5 py-2.5 hover:bg-stone-50 flex items-center gap-3">
+                  <Badge tone={f.kind === 'income' ? TONES.emerald : TONES.stone} upper>{f.kind}</Badge>
+                  <span className="flex-1 min-w-0 text-sm text-ink truncate">
+                    {f.category}
+                    {f.note && <span className="text-stone-500"> · {f.note}</span>}
+                    <span className="ml-2 font-mono text-[10px] uppercase text-stone-500">
+                      {formatMonth(f.startMonth, true)} → {f.endMonth ? formatMonth(f.endMonth, true) : 'ongoing'}
+                    </span>
+                  </span>
+                  <FixedAmount item={f} base={base} rates={rates} />
+                </button>
+              ))}
+            </div>
+            {(() => {
+              // This month's share of each fixed item, as the totals count it (paid-in-month items only when due).
+              const active = data.schedule.filter((e) => e.fixedId && e.month === now);
+              const sum = (k) => active.filter((e) => e.kind === k).reduce((s, e) => s + convert(e.amount, e.currency, base, rates), 0);
+              return (
+                <p className="text-[11px] text-stone-500 mt-2">
+                  This month: {money(sum('income'))} fixed income, {money(sum('expense'))} fixed expenses, {money(sum('income') - sum('expense'))} left over.
+                </p>
+              );
+            })()}
+          </>
+        ) : (
+          <EmptyState text="Add income and expenses that are the same every month, and they will be filled in automatically." />
+        )}
+      </Section>
+
+      <Categories w={w} lists={categoryLists} />
+
+      <Section collapsible chip={entries.length || undefined} title={`Entries · ${formatMonth(month)}`} icon={Receipt}>
         {entries.length ? (
           <div className="divide-y divide-stone-200 -mx-4 sm:-mx-5">
             {entries.map((e) => (
-              <button key={e.id} type="button" onClick={() => entryEd.start(e)} className="w-full text-left px-4 sm:px-5 py-2.5 hover:bg-stone-50 flex items-center gap-3">
+              <button key={e.id} type="button" onClick={() => (e.txnId ? (setPanel({ ref: e.txnAccount, kind: e.txnAccount.split(':')[0] }), setTab('accounts')) : e.liabilityId ? setTab('liabilities') : e.fixedId ? fixedEd.start(data.fixed.find((f) => f.id === e.fixedId)) : entryEd.start(e))} className="w-full text-left px-4 sm:px-5 py-2.5 hover:bg-stone-50 flex items-center gap-3">
                 <Badge tone={e.kind === 'income' ? TONES.emerald : TONES.stone} upper>{e.kind}</Badge>
                 <span className="flex-1 min-w-0 text-sm text-ink truncate">
                   {e.category}
                   {e.note && <span className="text-stone-500"> · {e.note}</span>}
-                  {e.recurring && <span className="ml-2 font-mono text-[10px] uppercase text-stone-500">Recurring</span>}
+                  {e.recurring && <span className="ml-2 font-mono text-[10px] uppercase text-stone-500">{e.liabilityId ? 'From liabilities' : e.fixedId ? 'Fixed' : 'Recurring'}</span>}
+                  {e.txnId && <span className="ml-2 font-mono text-[10px] uppercase text-stone-500">From statement</span>}
                 </span>
-                <Amount value={e.amount} currency={e.currency} base={base} rates={rates} className="text-sm" />
+                {e.range || e.every > 1 ? (
+                  <FixedAmount item={{ amount: e.range ? e.range[0] : e.amount * e.every, amountMax: e.range?.[1], currency: e.currency, every: e.every }} base={base} rates={rates} />
+                ) : (
+                  <Amount value={e.amount} currency={e.currency} base={base} rates={rates} className="text-sm" />
+                )}
               </button>
             ))}
           </div>
@@ -1075,8 +1446,46 @@ function CashFlow({ w, data, base, rates, currencies, money, now }) {
         )}
       </Section>
 
+      <Modal open={checklistOpen} side title={`Checklist · ${formatMonth(month)}`} onClose={() => setChecklistOpen(false)}>
+        {checklist.length === 0 ? (
+          <EmptyState text="No checklist expenses yet. Tick “Include in monthly checklist” when adding an expense." />
+        ) : (
+          <div className="space-y-3">
+            <p className="text-xs text-stone-500">
+              {checklist.filter((c) => c.entry).length} of {checklist.length} added for {formatMonth(month)} · planned {money(planned)}
+            </p>
+            <ul className="divide-y divide-stone-100 rounded-xl border border-stone-200 bg-white">
+              {checklist.map(({ item, entry, fixed }) => (
+                <li key={item.id}>
+                  <button
+                    type="button"
+                    disabled={copying}
+                    aria-pressed={!!entry}
+                    onClick={() => toggleChecklist({ item, entry, fixed })}
+                    className="w-full flex items-center gap-3 px-3 py-2.5 text-left hover:bg-stone-50"
+                  >
+                    {entry ? <CircleCheck className="w-4 h-4 shrink-0 text-emerald-600" /> : <Circle className="w-4 h-4 shrink-0 text-stone-400" />}
+                    <span className="min-w-0 flex-1">
+                      <span className={cx('block text-sm font-semibold truncate', entry ? 'text-stone-500 line-through' : 'text-stone-900')}>{item.category}</span>
+                      {(item.note || fixed) && <span className="block text-xs text-stone-500 truncate">{[fixed && 'Fixed', item.note].filter(Boolean).join(' · ')}</span>}
+                    </span>
+                    <span className="text-sm tabular-nums">{formatMoney((entry || item).amount, (entry || item).currency)}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+            {checklist.some((c) => !c.entry && !c.fixed) && (
+              <Button icon={Plus} disabled={copying} onClick={async () => { for (const c of checklist.filter((x) => !x.entry && !x.fixed)) await addFromChecklist(c.item); }}>
+                Add all remaining
+              </Button>
+            )}
+          </div>
+        )}
+      </Modal>
       <EntryForm
         open={entryEd.open}
+        categoryLists={categoryLists}
+        accounts={accounts}
         record={entryEd.record}
         defaults={{ month, kind, currency: base }}
         currencies={currencies}
@@ -1084,8 +1493,21 @@ function CashFlow({ w, data, base, rates, currencies, money, now }) {
         onDelete={entryEd.record && w.remove('entries', entryEd.record.id)}
         onClose={entryEd.close}
       />
+      <FixedForm
+        open={fixedEd.open}
+        categoryLists={categoryLists}
+        accounts={accounts}
+        record={fixedEd.record?.new ? null : fixedEd.record}
+        defaults={{ kind: fixedEd.record?.kind || 'expense', every: fixedEd.record?.every || 1, currency: base, startMonth: month }}
+        currencies={currencies}
+        onSave={fixedEd.record?.new ? w.create('fixed') : w.update('fixed', fixedEd.record?.id)}
+        onDelete={fixedEd.record && !fixedEd.record.new && w.remove('fixed', fixedEd.record.id)}
+        onMoveToBudget={() => moveToBudget(fixedEd.record)}
+        onClose={fixedEd.close}
+      />
       <BudgetForm
         open={budgetEd.open}
+        categoryLists={categoryLists}
         record={budgetEd.record}
         currencies={currencies}
         defaultCurrency={base}
@@ -1095,6 +1517,350 @@ function CashFlow({ w, data, base, rates, currencies, money, now }) {
         onClose={budgetEd.close}
       />
     </div>
+  );
+}
+
+// Accounts & Cards tab: bank accounts and credit cards, transfers between them, Gmail statement
+// import, and the side panel with one account's transactions.
+function AccountsTab({ w, data, currencies, now, rates, panel, setPanel }) {
+  const [month, setMonth] = useState(now);
+  const transferEd = useEditor();
+  const accounts = data.assets.filter(isAccount);
+  const cards = data.liabilities.filter((l) => l.type === 'credit_card');
+  const categoryLists = categoriesOf(data.settings);
+  const gmailCtl = useGmail(w);
+  const panelItem = panel && (panel.kind === 'asset' ? accounts : cards).find((x) => accountRef(panel.kind, x) === panel.ref);
+
+  return (
+    <div className="space-y-4">
+      <Card className="p-4 flex flex-wrap items-center gap-3">
+        <label className="flex items-center gap-2 text-xs font-semibold text-stone-500">
+          Month
+          <input type="month" className={cx(selectClass, 'py-1.5!')} value={month} onChange={(e) => e.target.value && setMonth(e.target.value)} />
+        </label>
+        <span className="text-xs text-stone-500">Money in, out and moved, and card spending, for this month. Balances are as of today.</span>
+      </Card>
+      <Accounts
+        w={w}
+        data={data}
+        accounts={accounts}
+        cards={cards}
+        month={month}
+        now={now}
+        rates={rates}
+        transferEd={transferEd}
+        gmailCtl={gmailCtl}
+        onOpen={(kind, item) => setPanel({ kind, ref: accountRef(kind, item) })}
+      />
+      <AccountPanel
+        w={w}
+        data={data}
+        open={panelItem ? { ref: panel.ref, item: panelItem } : null}
+        categoryLists={categoryLists}
+        gmail={gmailCtl.gmail}
+        onClose={() => setPanel(null)}
+      />
+      <TransferForm
+        open={transferEd.open}
+        record={transferEd.record?.new ? null : transferEd.record}
+        defaults={{ startMonth: month, ...(transferEd.record?.new ? transferEd.record.defaults : {}) }}
+        currencies={currencies}
+        accounts={accounts}
+        onSave={transferEd.record?.new ? w.create('transfers') : w.update('transfers', transferEd.record?.id)}
+        onDelete={transferEd.record && !transferEd.record.new && w.remove('transfers', transferEd.record.id)}
+        onClose={transferEd.close}
+      />
+    </div>
+  );
+}
+
+// Gmail connection for fetching statements (configured on the server with GOOGLE_CLIENT_SECRET).
+function GmailRow({ ctl }) {
+  const { gmail, connect, disconnect } = ctl;
+  if (!gmail) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-xs text-stone-600">
+      <Mail className="w-4 h-4" />
+      {!gmail.configured ? (
+        <span>Gmail import isn't set up on the server yet (GOOGLE_CLIENT_SECRET in server/.env).</span>
+      ) : gmail.connected ? (
+        <>
+          <span>
+            Gmail connected: <b className="text-ink">{gmail.email}</b>. Open an account to add its statement email subject.
+          </span>
+          <button type="button" className="underline" onClick={disconnect}>Disconnect</button>
+        </>
+      ) : (
+        <>
+          <span>Fetch statements from Gmail automatically (read-only).</span>
+          <Button variant="soft" onClick={connect}>Connect Gmail</Button>
+        </>
+      )}
+    </div>
+  );
+}
+
+// Bank accounts for the month: balance now, what came in, went out and is on hold, and transfers between them.
+function Accounts({ w, data, accounts, cards, month, now, rates, transferEd, gmailCtl, onOpen }) {
+  const transfers = transfersIn(data.transfers, month);
+  const nameOf = (id) => accounts.find((a) => a.id === id)?.name || 'Deleted account';
+
+  return (
+    <Section
+      title="Accounts"
+      icon={Landmark}
+      subtitle={`Bank accounts and credit cards. Click one to see its transactions.`}
+      chip={accounts.length + cards.length || undefined}
+      action={
+        accounts.length > 1 && (
+          <Button variant="ghost" icon={Plus} onClick={() => transferEd.start({ new: true })}>
+            Transfer
+          </Button>
+        )
+      }
+    >
+      {accounts.length + cards.length === 0 ? (
+        <EmptyState text="Add your bank accounts (salary, savings) as Bank assets, and credit cards as Credit card liabilities, to see them here." />
+      ) : (
+        <div className="space-y-4">
+          <GmailRow ctl={gmailCtl} />
+          <div className="grid sm:grid-cols-2 gap-3">
+            {accounts.map((a) => {
+              const m = accountMonth(a, data.entries, data.transfers, month, rates, data.transactions);
+              const fmt = (x) => formatMoney(x, a.currency);
+              const held = heldAmounts(a, data.planned, now, rates, data.transactions);
+              return (
+                <div key={a.id} className="rounded-xl border border-stone-200 bg-stone-50 p-3">
+                  <button type="button" onClick={() => onOpen('asset', a)} className="w-full text-left flex items-start justify-between gap-2 hover:opacity-80">
+                    <div className="min-w-0">
+                      <div className="text-sm font-semibold text-ink truncate">{a.name}</div>
+                      <div className="text-[11px] text-stone-500">
+                        {isTracked(a) ? `Balance now · kept up to date since ${formatMonth(a.balanceMonth, true)}` : 'Balance typed in · not tracked'}
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-base font-bold tabular-nums text-ink">{fmt(assetValue(a) - (a.reservedAmount || 0))}</div>
+                      {a.reservedAmount > 0 && <div className="text-[11px] text-amber-700">+ {fmt(a.reservedAmount)} saved for later</div>}
+                      {held.total > 0 && (
+                        <div className="text-[11px] text-stone-600">{fmt(assetValue(a) - (a.reservedAmount || 0) - held.total)} available</div>
+                      )}
+                    </div>
+                  </button>
+                  <div className={cx('grid gap-2 mt-3 text-[11px]', held.total > 0 ? 'grid-cols-3' : 'grid-cols-2')}>
+                    {[
+                      // Everything that came in or went out this month, own-account transfers included.
+                      ['In', m.income + m.received, 'text-emerald-700'],
+                      ['Out', -(m.expenses + m.sent), 'text-rose-700'],
+                      // Fixed expenses paid from this account, held from the 1st of the month.
+                      held.total > 0 && ['On hold', held.total, 'text-amber-700', held.items.map((x) => `${x.label}: ${fmt(x.amount)}`).join(', ')],
+                    ].filter(Boolean).map(([label, v, tone, title]) => (
+                      <div key={label} title={title}>
+                        <div className="font-mono uppercase text-stone-500">{label}</div>
+                        <div className={cx('font-semibold tabular-nums', tone)}>{fmt(v)}</div>
+                      </div>
+                    ))}
+                  </div>
+                  {!isTracked(a) && <p className="text-[11px] text-stone-400 mt-2">Edit it under Assets and pick “Track balance from month” to keep it up to date.</p>}
+                </div>
+              );
+            })}
+          </div>
+          {cards.length > 0 && (
+            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {cards.map((c) => {
+                const ref = accountRef('liability', c);
+                const spent = data.transactions
+                  .filter((t) => t.account === ref && t.direction === 'out' && monthOf(t.date) === month)
+                  .reduce((s, t) => s + t.amount, 0);
+                const untagged = data.transactions.filter((t) => t.account === ref && !t.category).length;
+                return (
+                  <button key={c.id} type="button" onClick={() => onOpen('liability', c)} className="text-left rounded-xl border border-stone-200 bg-white p-3 hover:bg-stone-50">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-sm font-semibold text-ink truncate">{c.name}</span>
+                      <Badge tone={TONES.rose}>Card</Badge>
+                    </div>
+                    <div className="text-base font-bold tabular-nums text-ink mt-1">{formatMoney(c.outstanding, c.currency)}</div>
+                    <div className="text-[11px] text-stone-500">
+                      Outstanding{c.statementTo ? ` · statement ${formatDay(c.statementTo)}` : ''}
+                    </div>
+                    <div className="text-[11px] text-stone-600 mt-1">
+                      Spent in {formatMonth(month, true)}: {formatMoney(spent, c.currency)}
+                      {untagged > 0 && <span className="text-amber-700"> · {untagged} untagged</span>}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          {transfers.length > 0 && (
+            <div className="divide-y divide-stone-200 -mx-4 sm:-mx-5 border-t border-stone-200">
+              {transfers.map((t) => (
+                <button key={t.id} type="button" onClick={() => transferEd.start(t)} className="w-full text-left px-4 sm:px-5 py-2.5 hover:bg-stone-50 flex items-center gap-3">
+                  <Badge tone={TONES.blue} upper>Transfer</Badge>
+                  <span className="flex-1 min-w-0 text-sm text-ink truncate">
+                    {nameOf(t.fromId)} → {nameOf(t.toId)}
+                    {t.note && <span className="text-stone-500"> · {t.note}</span>}
+                    {t.monthly && <span className="ml-2 font-mono text-[10px] uppercase text-stone-500">Every month</span>}
+                  </span>
+                  <span className="text-sm font-semibold tabular-nums text-ink">{formatMoney(t.amount, t.currency)}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </Section>
+  );
+}
+
+// One category in "Where the money went". Clicking it opens a popup with the noted lines inside it.
+// Only one popup is open at a time: the card holds which one (`open` is its screen spot, or null).
+function CategoryRow({ c, share, width, largest, over, money, open, setOpen }) {
+  // The card clips overflow, so the popup is placed on the screen under the row.
+  useEffect(() => {
+    if (!open) return;
+    const close = () => setOpen(null);
+    const onKey = (e) => e.key === 'Escape' && close();
+    document.addEventListener('click', close);
+    document.addEventListener('keydown', onKey);
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
+    return () => {
+      document.removeEventListener('click', close);
+      document.removeEventListener('keydown', onKey);
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('resize', close);
+    };
+  }, [open, setOpen]);
+  const unnoted = c.amount - c.notes.reduce((t, n) => t + n.amount, 0);
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          const r = e.currentTarget.getBoundingClientRect();
+          const below = window.innerHeight - r.bottom > 220;
+          setOpen(open ? null : { left: r.left, width: r.width, ...(below ? { top: r.bottom + 4 } : { bottom: window.innerHeight - r.top + 4 }) });
+        }}
+        className="w-full text-left rounded-lg -mx-1 px-1 py-0.5 hover:bg-stone-50"
+      >
+        <div className="flex items-center justify-between text-xs">
+          <span className="font-semibold text-ink">
+            {c.category}
+            {over && (
+              <span className="ml-2 rounded px-1.5 py-px bg-rose-600 text-white font-mono text-[9px] font-semibold uppercase tracking-wider">Over budget</span>
+            )}
+            {largest && <span className="ml-2 font-mono text-[10px] uppercase text-stone-500">Largest</span>}
+          </span>
+          <span className="tabular-nums text-stone-700">
+            {money(c.amount)} · {formatPct(share, 0)}
+          </span>
+        </div>
+        <div className="mt-1">
+          <ProgressBar thin percent={width} color={over ? '#d93a2b' : '#4c76ff'} />
+        </div>
+      </button>
+      {open && (
+        <div onClick={(e) => e.stopPropagation()} style={open} className="fixed z-50 max-h-60 overflow-y-auto rounded-xl border border-stone-200 bg-white shadow-lg p-3 text-xs">
+          <p className="font-semibold text-ink mb-2">{c.category}</p>
+          <div className="space-y-1.5">
+            {c.notes.map((n) => (
+              <div key={n.note} className="flex justify-between gap-3">
+                <span className="text-stone-700 truncate">{n.note}</span>
+                <span className="tabular-nums text-ink">{money(n.amount)}</span>
+              </div>
+            ))}
+            {unnoted > 0.005 && (
+              <div className="flex justify-between gap-3">
+                <span className="text-stone-500 italic">{c.notes.length ? 'Other (no note)' : 'No notes added'}</span>
+                <span className="tabular-nums text-ink">{money(unnoted)}</span>
+              </div>
+            )}
+          </div>
+          <div className="flex justify-between gap-3 border-t border-stone-200 mt-2 pt-2 font-semibold text-ink">
+            <span>Total</span>
+            <span className="tabular-nums">{money(c.amount)}</span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// A fixed amount, or for a range "low – high", with the monthly figure the totals use underneath
+// when it differs (a range's midpoint, or a quarterly/yearly payment spread across its months).
+function FixedAmount({ item, base, rates }) {
+  const every = item.every || 1;
+  if (!hasRange(item) && every === 1) return <Amount value={item.amount} currency={item.currency} base={base} rates={rates} className="text-sm" />;
+  const fmt = (x) => formatMoney(x, item.currency);
+  const freq = every === 1 ? '' : ` / ${FREQUENCIES.find((f) => f.key === every)?.label.toLowerCase()}`;
+  return (
+    <span className="text-right shrink-0">
+      <span className="block text-sm font-semibold tabular-nums text-ink">
+        {hasRange(item) ? `${fmt(item.amount)} – ${fmt(item.amountMax)}` : fmt(item.amount)}{freq}
+      </span>
+      <span className="block text-[11px] text-stone-500 tabular-nums">
+        {isSpread(item) ? `~${formatMoney(convert(fixedAmount(item), item.currency, base, rates), base)}/mo counted` : 'counted when paid'}
+      </span>
+    </span>
+  );
+}
+
+// Add or remove the categories offered in the income, expense and budget forms.
+// Removing one does not touch entries already recorded under it.
+function Categories({ w, lists }) {
+  const [drafts, setDrafts] = useState({ income: '', expense: '' });
+  const save = (kind, list) => w.saveSettings({ [`${kind}Categories`]: list });
+  const add = (kind) => {
+    const name = drafts[kind].trim();
+    if (!name) return;
+    if (!lists[kind].some((c) => c.toLowerCase() === name.toLowerCase())) save(kind, [...lists[kind], name]);
+    setDrafts((d) => ({ ...d, [kind]: '' }));
+  };
+  const remove = (kind, name) => {
+    if (lists[kind].length <= 1) return;
+    save(kind, lists[kind].filter((c) => c !== name));
+  };
+
+  return (
+    <Section collapsible title="Categories" icon={Tags} subtitle="Shown in the category dropdown when you add income, expenses and budgets.">
+      <div className="grid sm:grid-cols-2 gap-5">
+        {['income', 'expense'].map((kind) => (
+          <div key={kind}>
+            <div className="font-mono text-[11px] font-semibold uppercase tracking-wider text-stone-500 mb-2">{kind === 'income' ? 'Income' : 'Expense'}</div>
+            <div className="flex flex-wrap gap-1.5">
+              {lists[kind].map((c) => (
+                <span key={c} className="inline-flex items-center gap-1 rounded-full border border-stone-300 bg-white pl-2.5 pr-1 py-0.5 text-xs text-ink">
+                  {c}
+                  {lists[kind].length > 1 && (
+                    <button type="button" onClick={() => remove(kind, c)} className="rounded-full p-0.5 text-stone-400 hover:bg-rose-50 hover:text-rose-600" aria-label={`Remove ${c}`}>
+                      <X className="w-3 h-3" />
+                    </button>
+                  )}
+                </span>
+              ))}
+            </div>
+            <form
+              className="flex gap-2 mt-2"
+              onSubmit={(e) => {
+                e.preventDefault();
+                add(kind);
+              }}
+            >
+              <input
+                className={cx(inputClass, 'py-1.5!')}
+                maxLength={60}
+                placeholder={`New ${kind} category`}
+                value={drafts[kind]}
+                onChange={(e) => setDrafts((d) => ({ ...d, [kind]: e.target.value }))}
+              />
+              <Button type="submit" variant="soft" icon={Plus} disabled={!drafts[kind].trim()}>Add</Button>
+            </form>
+          </div>
+        ))}
+      </div>
+    </Section>
   );
 }
 
@@ -1182,7 +1948,109 @@ function Goals({ w, data, base, rates, currencies, t }) {
 
 /* ---------- Forecast ---------- */
 
-function Forecast({ w, data, settings, money, t, avg }) {
+const PERIODS = [
+  { key: 1, label: 'Month' },
+  { key: 3, label: 'Quarter' },
+  { key: 6, label: 'Half-year' },
+  { key: 12, label: 'Year' },
+];
+
+// Expected income, expenses and savings for the coming month, quarter, half-year or year.
+function Projection({ entries, planned, budgets, base, rates, money, now }) {
+  const [count, setCount] = useState(3);
+  const p = useMemo(() => projectCashflow(entries, planned, count, base, rates, now, budgets), [entries, planned, count, base, rates, now, budgets]);
+  const { total } = p;
+  const span = count === 1 ? formatMonth(now) : `${formatMonth(now, true)} – ${formatMonth(addMonths(now, count - 1), true)}`;
+  const avgNote = p.basedOn ? ' (average)' : '';
+  const rows = [
+    ['Fixed income', total.fixedIncome],
+    [`Other income${avgNote}`, total.variableIncome],
+    ['Fixed expenses', -total.fixedExpenses],
+    ['Loan EMIs', -total.emis],
+    ...(budgets.length ? [['Budgets', -total.budgets]] : []),
+    [`Other expenses${avgNote}`, -total.variableExpenses],
+  ];
+
+  return (
+    <Section
+      block
+      title="Cash flow projection"
+      icon={CalendarClock}
+      subtitle={span}
+      action={
+        <div className="flex gap-1" role="tablist">
+          {PERIODS.map((x) => (
+            <button
+              key={x.key}
+              type="button"
+              role="tab"
+              aria-selected={count === x.key}
+              onClick={() => setCount(x.key)}
+              className={cx(
+                'px-2.5 py-1 rounded-lg border-[1.5px] font-mono text-[10px] font-semibold uppercase tracking-wider transition',
+                count === x.key ? 'bg-taxi border-ink text-ink' : 'bg-white border-stone-300 text-stone-600 hover:border-ink hover:text-ink',
+              )}
+            >
+              {x.label}
+            </button>
+          ))}
+        </div>
+      }
+    >
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <Stat label="Expected income" zone="bg-zone-green" value={money(total.income, { compact: true })} />
+        <Stat label="Expected expenses" zone="bg-zone-orange" value={money(total.expenses, { compact: true })} />
+        <Stat label="Expected savings" zone="bg-zone-blue" value={money(total.savings, { compact: true })} negative={total.savings < 0} />
+        <Stat label="Savings rate" zone="bg-taxi" value={formatPct(total.rate)} />
+      </div>
+      <div className="grid lg:grid-cols-2 gap-5 mt-4">
+        <div>
+          <div className="divide-y divide-stone-100">
+            {rows.map(([label, v]) => (
+              <div key={label} className="flex items-center justify-between py-1.5 text-xs">
+                <span className="text-stone-600">{label}</span>
+                <span className={cx('tabular-nums font-semibold', v < 0 ? 'text-stone-700' : 'text-emerald-700')}>
+                  {v < 0 ? '−' : '+'}
+                  {money(Math.abs(v))}
+                </span>
+              </div>
+            ))}
+          </div>
+          <div className="flex items-center justify-between pt-2 mt-1 border-t-[1.5px] border-stone-200 text-sm font-bold">
+            <span>Expected savings</span>
+            <span className={cx('tabular-nums', total.savings < 0 && 'text-rose-700')}>{money(total.savings)}</span>
+          </div>
+          <p className="text-[11px] text-stone-500 mt-2">
+            Fixed items and EMIs are known for each month{budgets.length ? '; budgeted categories count at their budget' : ''}.{' '}
+            {p.basedOn
+              ? `Other income and expenses use your average of the last ${p.basedOn} month${p.basedOn === 1 ? '' : 's'}.`
+              : 'Add a few months of other income and expenses to include them.'}
+          </p>
+        </div>
+        {count > 1 && (
+          <ColumnChart
+            ariaLabel="Projected income and expenses by month"
+            groups={p.months.map((m) => ({ ...m, label: formatMonth(m.month, true) }))}
+            series={[
+              { key: 'income', label: 'Income', color: SERIES[2] },
+              { key: 'expenses', label: 'Expenses', color: SERIES[1] },
+            ]}
+            format={(x) => money(x)}
+            formatTick={(x) => money(x, { compact: true })}
+            extra={(g) => (
+              <div className="mt-1 pt-1 border-t border-stone-200 flex justify-between">
+                <span className="text-stone-600">Saved</span>
+                <span className={cx('font-semibold tabular-nums', g.savings < 0 ? 'text-rose-700' : 'text-ink')}>{money(g.savings)}</span>
+              </div>
+            )}
+          />
+        )}
+      </div>
+    </Section>
+  );
+}
+
+function Forecast({ w, data, settings, base, rates, money, t, avg, now }) {
   const [form, setForm] = useState(() => draftOf(settings));
   const [real, setReal] = useState(false);
   useEffect(() => setForm(draftOf(settings)), [settings]);
@@ -1210,6 +2078,7 @@ function Forecast({ w, data, settings, money, t, avg }) {
 
   return (
     <div className="space-y-4">
+      <Projection entries={data.entries} planned={data.planned} budgets={data.budgets || []} base={base} rates={rates} money={money} now={now} />
       <Section
         title="Wealth forecast"
         icon={TrendingUp}
@@ -1262,7 +2131,7 @@ function Forecast({ w, data, settings, money, t, avg }) {
         </div>
         <ul className="mt-4 text-[11px] text-stone-500 space-y-1 list-disc pl-4">
           <li>Each month: investments grow at the scenario return and receive that month's savings; cash stays flat; property rises with inflation; each loan is paid down by its EMI.</li>
-          <li>Savings rise by {draft.savingsGrowth}% a year. They are taken after EMIs, so record EMI payments as “Loan EMI” expenses.</li>
+          <li>Savings rise by {draft.savingsGrowth}% a year. They are taken after EMIs, which are added to your expenses automatically from Liabilities.</li>
           <li>“Today's money” divides each value by (1 + inflation)^years at {draft.inflation}% inflation.</li>
           <li>
             Financial independence: investable assets{draft.excludeHomeFromFi ? ' (excluding real estate)' : ''} minus all debt reach yearly expenses

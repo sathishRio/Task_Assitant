@@ -313,8 +313,9 @@ export function InsightCard({ title, intro, tips }) {
 // Open modals in stacking order, so Escape closes only the top one.
 const modalStack = [];
 
-// `side` slides the dialog in as a full-height panel on the right instead of centring it.
-export function Modal({ open, title, onClose, footer, children, wide, side }) {
+// `side` slides the dialog in as a full-height panel on the right instead of centring it; with
+// `half` that panel takes half the screen on large screens (full width on phones).
+export function Modal({ open, title, onClose, footer, children, wide, side, half }) {
   // Kept in a ref so a new onClose each render doesn't re-register (and re-stack) the modal.
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
@@ -343,7 +344,7 @@ export function Modal({ open, title, onClose, footer, children, wide, side }) {
         aria-label={title}
         className={cx(
           'w-full bg-white border-ink overflow-hidden flex flex-col',
-          side ? 'h-full max-w-md border-l-[1.5px] shadow-block' : 'rounded-2xl shadow-block border-[1.5px] max-h-[90vh]',
+          side ? cx('h-full border-l-[1.5px] shadow-block', half ? 'lg:w-1/2' : 'max-w-md') : 'rounded-2xl shadow-block border-[1.5px] max-h-[90vh]',
           wide ? 'max-w-2xl' : !side && 'max-w-lg',
         )}
       >

@@ -7,6 +7,7 @@ import {
   Cloud,
   Code,
   Flag,
+  GraduationCap,
   Lightbulb,
   ListPlus,
   Network,
@@ -21,12 +22,50 @@ import { formatDate } from '../dates';
 import { Badge, Button, Card, Checkbox, EmptyState, IconButton, MicroHeading, ProgressBar, SectionTitle, cx } from '../ui';
 import { CertificationForm, PhaseForm, ProfileForm, TaskForm } from '../forms';
 import PhaseModal from './PhaseModal';
+import LearningView from './learning/LearningView';
 
 // The 3D town (and three.js with it) loads separately from the rest of the app.
 const TownScene = lazy(() => import('./career/TownScene'));
 
 const PHASE_ICONS = [Lightbulb, Cloud, Code, Network, Bot, Briefcase];
 const phaseIcon = (phase) => PHASE_ICONS[phase.order - 1] || Flag;
+
+// Career has two tabs; the last one used is remembered in this browser.
+const TAB_STORAGE = 'task-assistant/career-tab';
+const CAREER_TABS = [
+  { key: 'roadmap', label: 'Roadmap', Icon: Flag },
+  { key: 'learning', label: 'Learning', Icon: GraduationCap },
+];
+const readTab = () => {
+  try {
+    return localStorage.getItem(TAB_STORAGE) === 'learning' ? 'learning' : 'roadmap';
+  } catch {
+    return 'roadmap';
+  }
+};
+
+function CareerTabs({ tab, onChange }) {
+  return (
+    <div role="tablist" className="inline-flex gap-1 p-1 mb-5 rounded-xl border-[1.5px] border-ink bg-white">
+      {CAREER_TABS.map(({ key, label, Icon }) => (
+        <button
+          key={key}
+          type="button"
+          role="tab"
+          aria-selected={tab === key}
+          onClick={() => onChange(key)}
+          className={cx(
+            'inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-[10px] text-sm font-semibold transition',
+            tab === key ? 'bg-taxi text-ink shadow-[inset_0_0_0_1.5px_var(--color-ink)]' : 'text-stone-600 hover:text-ink hover:bg-stone-100',
+          )}
+        >
+          <Icon className="w-4 h-4" />
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 const reducedMotion = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 
@@ -270,6 +309,24 @@ function TargetRolesCard({ profile, className }) {
 }
 
 export default function CareerView() {
+  const [tab, setTabState] = useState(readTab);
+  const setTab = (key) => {
+    setTabState(key);
+    try {
+      localStorage.setItem(TAB_STORAGE, key);
+    } catch {
+      // Storage blocked: the tab just isn't remembered.
+    }
+  };
+  return (
+    <>
+      <CareerTabs tab={tab} onChange={setTab} />
+      {tab === 'learning' ? <LearningView /> : <RoadmapTab />}
+    </>
+  );
+}
+
+function RoadmapTab() {
   const { state } = useStore();
   const { profile, phases, tasks, categories } = state;
   const [openPhaseId, setOpenPhaseId] = useState(null);

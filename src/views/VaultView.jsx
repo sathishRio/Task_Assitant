@@ -57,10 +57,11 @@ const lockMessage = (until) =>
   `Too many wrong PINs. Try again after ${new Date(until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.`;
 
 // Asks for the PIN and unlocks the vault for 5 minutes. Resolves via onUnlocked.
-function UnlockModal({ open, reason, onUnlocked, onClose }) {
+export function UnlockModal({ open, reason, onUnlocked, onClose }) {
   const [pin, setPin] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [extended, setExtended] = useState(false);
 
   useEffect(() => {
     if (open) {
@@ -74,7 +75,7 @@ function UnlockModal({ open, reason, onUnlocked, onClose }) {
     setBusy(true);
     setError('');
     try {
-      const { unlockToken, expiresAt } = await vaultApi.unlock(value);
+      const { unlockToken, expiresAt } = await vaultApi.unlock(value, extended);
       setVaultSession(unlockToken, expiresAt);
       onUnlocked();
     } catch (e) {
@@ -93,7 +94,7 @@ function UnlockModal({ open, reason, onUnlocked, onClose }) {
         <span className="inline-flex w-12 h-12 rounded-2xl bg-emerald-50 border border-emerald-200 items-center justify-center">
           <Lock className="w-5 h-5 text-emerald-700" />
         </span>
-        <p className="text-sm text-stone-500 mt-3">{reason || 'Enter your 4-digit PIN.'} The vault stays unlocked for 5 minutes.</p>
+        <p className="text-sm text-stone-500 mt-3">{reason || 'Enter your 4-digit PIN.'} The vault stays unlocked for {extended ? '1 hour' : '5 minutes'}.</p>
       </div>
       <form
         onSubmit={(e) => {
@@ -103,6 +104,10 @@ function UnlockModal({ open, reason, onUnlocked, onClose }) {
         className="space-y-4"
       >
         <PinInput label="4-digit PIN" value={pin} onChange={setPin} onComplete={submit} autoFocus />
+        <label className="flex items-center justify-center gap-2 text-sm text-stone-700 cursor-pointer">
+          <input type="checkbox" className="w-4 h-4 accent-emerald-600" checked={extended} onChange={(e) => setExtended(e.target.checked)} />
+          Keep unlocked for 1 hour
+        </label>
         {error && <p role="alert" className="text-center text-xs font-medium text-rose-600">{error}</p>}
         <div className="flex justify-center">
           <Button type="submit" icon={LockOpen} disabled={pin.length !== 4 || busy}>{busy ? 'Checking…' : 'Unlock'}</Button>
@@ -114,7 +119,7 @@ function UnlockModal({ open, reason, onUnlocked, onClose }) {
 
 /* ---------- First-time setup ---------- */
 
-function SetupCard({ onDone }) {
+export function SetupCard({ onDone }) {
   const [pin, setPin] = useState('');
   const [confirm, setConfirm] = useState('');
   const [error, setError] = useState('');
@@ -351,13 +356,13 @@ function ResetModal({ open, onClose, onReset }) {
               }
             }}
           >
-            Delete all saved passwords
+            Delete passwords and Wealth data
           </Button>
         </>
       }
     >
       <p className="text-sm text-stone-600">
-        Use this only if you forgot your PIN. <strong>Every saved password is permanently deleted</strong>, then you can create a new PIN.
+        Use this only if you forgot your PIN. <strong>Every saved password and all your Wealth data are permanently deleted</strong>, because they are encrypted with this PIN. Then you can create a new PIN.
       </p>
       <Field label='Type "DELETE" to confirm'>
         <input className={inputClass} value={text} onChange={(e) => setText(e.target.value)} autoFocus />
