@@ -3,6 +3,7 @@ import { ChevronLeft, ChevronRight, Lock, Mail, Pencil, Plus, RefreshCw, Trash2,
 import { wealthApi } from '../../api';
 import { Badge, Button, EmptyState, IconButton, Modal, cx, inputClass, selectClass } from '../../ui';
 import { TONES } from '../../theme';
+import { todayStr } from '../../dates';
 import { EXCLUDED_TAGS, formatMoney, formatMonth, linksOf, merchantKey, monthOf, thisMonth } from './calc';
 
 const PAGE_SIZE = 15;
@@ -60,18 +61,105 @@ function LinkChecks({ value, direction, data, onChange }) {
   );
 }
 
+// Debit / credit, description and date of a line added by hand.
+function EntryDetails({ form, set }) {
+  return (
+    <>
+      <div className="grid grid-cols-2 gap-2" role="group" aria-label="Type">
+        {[['out', 'Debit', 'Money out', 'border-rose-400 bg-rose-50 text-rose-800'], ['in', 'Credit', 'Money in', 'border-emerald-500 bg-emerald-50 text-emerald-800']].map(([value, label, hint, on]) => (
+          <button
+            key={value}
+            type="button"
+            aria-pressed={form.direction === value}
+            onClick={() => set({ direction: value })}
+            className={cx('rounded-xl border p-2 text-sm font-semibold', form.direction === value ? on : 'border-stone-200 text-stone-600 hover:bg-stone-50')}
+          >
+            {label}
+            <span className="block text-[11px] font-normal">{hint}</span>
+          </button>
+        ))}
+      </div>
+      <label className="block">
+        <span className="block text-xs font-semibold text-stone-700 mb-1">Description</span>
+        <input autoFocus maxLength={200} className={inputClass} value={form.description} onChange={(e) => set({ description: e.target.value })} placeholder="e.g. Sent to landlord" />
+      </label>
+      <label className="block">
+        <span className="block text-xs font-semibold text-stone-700 mb-1">Date</span>
+        <input type="date" className={inputClass} value={form.date} onChange={(e) => set({ date: e.target.value })} />
+      </label>
+    </>
+  );
+}
+
+// Popup to add a credit or debit by hand. It counts straight away; a later statement maps to it.
+function AddEntry({ open, currency, categoryLists, onSave, onClose }) {
+  const [form, setForm] = useState(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => setForm(open ? { direction: 'out', description: '', date: todayStr(), amount: '', category: 'Transfer' } : null), [open]);
+  if (!open || !form) return null;
+  const set = (patch) => setForm((f) => ({ ...f, ...patch }));
+  const amount = Math.round(Number(String(form.amount).replace(/,/g, '')) * 100) / 100;
+  const valid = amount > 0 && form.description.trim() && form.date;
+  const save = async (e) => {
+    e.preventDefault();
+    if (!valid || busy) return;
+    setBusy(true);
+    await onSave({ direction: form.direction, description: form.description.trim(), date: form.date, amount, category: form.category });
+    setBusy(false);
+  };
+  return (
+    <Modal
+      open
+      title="Add transfer"
+      onClose={onClose}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button type="submit" form="add-entry" disabled={busy || !valid}>{busy ? 'Adding…' : 'Add'}</Button>
+        </>
+      }
+    >
+      <form id="add-entry" className="space-y-4" onSubmit={save}>
+        <EntryDetails form={form} set={set} />
+        <div className="grid grid-cols-2 gap-4">
+          <label className="block">
+            <span className="block text-xs font-semibold text-stone-700 mb-1">Amount ({currency})</span>
+            <input inputMode="decimal" className={cx(inputClass, 'tabular-nums')} value={form.amount} onChange={(e) => set({ amount: e.target.value })} />
+          </label>
+          <label className="block">
+            <span className="block text-xs font-semibold text-stone-700 mb-1">Tag</span>
+            <TagSelect value={form.category} direction={form.direction} categoryLists={categoryLists} onChange={(category) => set({ category })} wide />
+          </label>
+        </div>
+        <p className="text-xs text-stone-500">When you import a statement, the line with the same amount within a week replaces this one. You can change the mapping before importing.</p>
+      </form>
+    </Modal>
+  );
+}
+
 // Popup to edit one line: amount, tag, what it pays, and whether it came out of the hold.
 function TxnEditor({ txn, isCard, data, categoryLists, fmt, onSave, onTag, onDelete, onClose }) {
   const [form, setForm] = useState(null);
   const [busy, setBusy] = useState(false);
-  useEffect(() => setForm(txn && { amount: String(txn.amount), category: txn.category || '', linkTo: linksOf(txn), fromHold: !!txn.fromHold }), [txn]);
+  useEffect(
+    () => setForm(txn && { amount: String(txn.amount), category: txn.category || '', linkTo: linksOf(txn), fromHold: !!txn.fromHold, description: txn.description, date: txn.date, direction: txn.direction }),
+    [txn],
+  );
   if (!txn || !form) return null;
   const set = (patch) => setForm((f) => ({ ...f, ...patch }));
   const amount = Math.round(Number(String(form.amount).replace(/,/g, '')) * 100) / 100;
+  // Lines added by hand can be fully corrected; statement lines keep what the bank printed.
+  const manual = txn.source === 'manual';
+  const valid = amount > 0 && form.description.trim() && form.date;
   const save = async () => {
-    if (!(amount > 0)) return;
+    if (!valid) return;
     setBusy(true);
-    const ok = await onSave({ amount, linkTo: form.linkTo, fromHold: !isCard && txn.direction === 'out' && form.fromHold });
+    const ok = await onSave({
+      amount,
+      linkTo: form.linkTo,
+      fromHold: !isCard && form.direction === 'out' && form.fromHold,
+      ...(manual ? { description: form.description.trim(), date: form.date, direction: form.direction } : {}),
+    });
     if (ok && form.category !== (txn.category || '')) await onTag(form.category);
     setBusy(false);
     if (ok) onClose();
@@ -86,15 +174,20 @@ function TxnEditor({ txn, isCard, data, categoryLists, fmt, onSave, onTag, onDel
           <Button variant="ghost" icon={Trash2} onClick={onDelete} className="text-rose-700">Delete</Button>
           <div className="flex gap-2">
             <Button variant="ghost" onClick={onClose}>Cancel</Button>
-            <Button onClick={save} disabled={busy || !(amount > 0)}>{busy ? 'Saving…' : 'Save'}</Button>
+            <Button onClick={save} disabled={busy || !valid}>{busy ? 'Saving…' : 'Save'}</Button>
           </div>
         </div>
       }
     >
-      <div>
-        <div className="text-sm font-semibold text-ink">{txn.description}</div>
-        <div className="text-xs text-stone-500">{formatDay(txn.date)} · {txn.direction === 'in' ? 'Money in' : 'Money out'}</div>
-      </div>
+      {manual ? (
+        <EntryDetails form={form} set={(patch) => set(patch.direction ? { ...patch, linkTo: [] } : patch)} />
+      ) : (
+        <div>
+          <div className="text-sm font-semibold text-ink">{txn.description}</div>
+          <div className="text-xs text-stone-500">{formatDay(txn.date)} · {txn.direction === 'in' ? 'Money in' : 'Money out'}</div>
+          {txn.note && <div className="text-xs text-stone-500">Added as: {txn.note}</div>}
+        </div>
+      )}
       <div className="grid grid-cols-2 gap-4">
         <label className="block">
           <span className="block text-xs font-semibold text-stone-700 mb-1">Amount ({txn.currency})</span>
@@ -102,14 +195,14 @@ function TxnEditor({ txn, isCard, data, categoryLists, fmt, onSave, onTag, onDel
         </label>
         <label className="block">
           <span className="block text-xs font-semibold text-stone-700 mb-1">Tag</span>
-          <TagSelect value={form.category} direction={txn.direction} categoryLists={categoryLists} onChange={(category) => set({ category })} wide />
+          <TagSelect value={form.category} direction={form.direction} categoryLists={categoryLists} onChange={(category) => set({ category })} wide />
         </label>
       </div>
       <div>
         <span className="block text-xs font-semibold text-stone-700 mb-1">Pays (replaces the planned amount this month)</span>
-        <LinkChecks value={form.linkTo} direction={txn.direction} data={data} onChange={(linkTo) => set({ linkTo })} />
+        <LinkChecks value={form.linkTo} direction={form.direction} data={data} onChange={(linkTo) => set({ linkTo })} />
       </div>
-      {!isCard && txn.direction === 'out' && (
+      {!isCard && form.direction === 'out' && (
         <label className="flex items-center gap-3 p-3 rounded-xl border border-stone-200 cursor-pointer">
           <input type="checkbox" className="w-4 h-4 accent-amber-600" checked={form.fromHold} onChange={(e) => set({ fromHold: e.target.checked })} />
           <span>
@@ -156,7 +249,7 @@ function TagSelect({ value, direction, categoryLists, onChange, disabled, wide }
 
 /* ---------- Upload ---------- */
 
-function UploadStatement({ w, account, categoryLists, onDone }) {
+function UploadStatement({ w, account, manual, categoryLists, onDone }) {
   const inputRef = useRef(null);
   const [file, setFile] = useState(null); // { name, data }
   const [password, setPassword] = useState('');
@@ -201,18 +294,25 @@ function UploadStatement({ w, account, categoryLists, onDone }) {
 
   const setLine = (i, patch) => setPreview((p) => ({ ...p, transactions: p.transactions.map((t, j) => (j === i ? { ...t, ...patch } : t)) }));
   const fresh = preview?.transactions.filter((t) => !t.duplicate) || [];
+  const mapped = fresh.filter((t) => t.match).length;
+  // Lines added by hand this statement line could replace: same way, not taken by another line.
+  const candidates = (line) => manual.filter((m) => m.direction === line.direction && (m.id === line.match?.id || !fresh.some((t) => t.match?.id === m.id)));
+  const mapTo = (i, line, id) => {
+    const m = manual.find((x) => x.id === id);
+    setLine(i, { match: m ? { id: m.id, date: m.date, description: m.description, amount: m.amount, category: m.category } : null, category: m?.category || line.category });
+  };
 
   const save = async () => {
     setBusy(true);
     const r = await w.call((t) =>
-      wealthApi.importTransactions(t, { account, transactions: fresh, to: preview.to, closing: preview.closing }),
+      wealthApi.importTransactions(t, { account, transactions: fresh.map((x) => ({ ...x, match: x.match?.id ?? null })), to: preview.to, closing: preview.closing }),
     );
     setBusy(false);
     if (!r) return;
-    w.merge('transactions', r.created);
+    w.merge('transactions', [...r.created, ...r.matched]);
     if (r.account) w.merge(r.account.kind, [r.account.item]);
     reset();
-    onDone(`${r.created.length} transaction${r.created.length === 1 ? '' : 's'} imported${r.duplicates ? `, ${r.duplicates} already there` : ''}.`);
+    onDone(`${r.created.length} transaction${r.created.length === 1 ? '' : 's'} imported${r.matched.length ? `, ${r.matched.length} mapped to transfers you added` : ''}${r.duplicates ? `, ${r.duplicates} already there` : ''}.`);
   };
 
   return (
@@ -280,17 +380,33 @@ function UploadStatement({ w, account, categoryLists, onDone }) {
               {formatDay(preview.from)} – {formatDay(preview.to)} · {preview.transactions.length} lines
               {preview.transactions.length - fresh.length > 0 && ` · ${preview.transactions.length - fresh.length} already imported (greyed out)`}
               {preview.closing != null && ` · closing balance ${preview.closing.toLocaleString(undefined, { minimumFractionDigits: 2 })}`}
+              {mapped > 0 && ` · ${mapped} mapped to transfers you added`}
             </p>
             <div className="divide-y divide-stone-100 -mx-2">
               {preview.transactions.map((t, i) => (
-                <div key={t.key} className={cx('flex items-center gap-2 px-2 py-1.5 text-xs', t.duplicate && 'opacity-40')}>
-                  <span className="w-20 shrink-0 tabular-nums text-stone-500">{t.date.slice(5).split('-').reverse().join('/')}</span>
-                  <span className="flex-1 min-w-0 truncate text-ink">{t.description}</span>
-                  <span className={cx('tabular-nums font-semibold', t.direction === 'in' ? 'text-emerald-700' : 'text-ink')}>
-                    {t.direction === 'in' ? '+' : '−'}
-                    {t.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                  </span>
-                  {!t.duplicate && <TagSelect value={t.category} direction={t.direction} categoryLists={categoryLists} onChange={(category) => setLine(i, { category })} />}
+                <div key={t.key} className={cx('px-2 py-1.5 text-xs', t.duplicate && 'opacity-40')}>
+                  <div className="flex items-center gap-2">
+                    <span className="w-20 shrink-0 tabular-nums text-stone-500">{t.date.slice(5).split('-').reverse().join('/')}</span>
+                    <span className="flex-1 min-w-0 truncate text-ink">{t.description}</span>
+                    <span className={cx('tabular-nums font-semibold', t.direction === 'in' ? 'text-emerald-700' : 'text-ink')}>
+                      {t.direction === 'in' ? '+' : '−'}
+                      {t.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                    </span>
+                    {!t.duplicate && <TagSelect value={t.category} direction={t.direction} categoryLists={categoryLists} onChange={(category) => setLine(i, { category })} />}
+                  </div>
+                  {!t.duplicate && candidates(t).length > 0 && (
+                    <label className="mt-1 flex items-center gap-2 pl-22 text-stone-500">
+                      Maps to
+                      <select className={cx(selectClass, 'py-1! text-xs! min-w-0 flex-1', t.match && 'border-sky-300! text-sky-800!')} value={t.match?.id || ''} onChange={(e) => mapTo(i, t, e.target.value)}>
+                        <option value="">Nothing (new line)</option>
+                        {candidates(t).map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {formatDay(m.date)} · {m.description} · {m.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
                 </div>
               ))}
             </div>
@@ -400,6 +516,7 @@ export function AccountPanel({ w, data, open, categoryLists, gmail, onClose }) {
   const [similar, setSimilar] = useState(null); // { txn, category, count }
   const [busyId, setBusyId] = useState(null);
   const [editing, setEditing] = useState(null); // the line open in the edit popup
+  const [adding, setAdding] = useState(false);
 
   useEffect(() => {
     setMonth(thisMonth());
@@ -408,6 +525,7 @@ export function AccountPanel({ w, data, open, categoryLists, gmail, onClose }) {
     setMessage('');
     setSimilar(null);
     setEditing(null);
+    setAdding(false);
   }, [open?.ref]);
   useEffect(() => setPage(0), [month, untagged]);
 
@@ -426,7 +544,9 @@ export function AccountPanel({ w, data, open, categoryLists, gmail, onClose }) {
   // Deletes imported lines (e.g. a wrong import); importing the statement again brings them back.
   const removeTxns = async (list) => {
     const n = list.length;
-    if (!n || !window.confirm(`Delete ${n === 1 ? 'this transaction' : `${n} transactions`}? You can import the statement again to bring ${n === 1 ? 'it' : 'them'} back.`)) return;
+    const handAdded = list.filter((t) => t.source === 'manual').length;
+    const warning = handAdded === n ? 'This cannot be undone.' : `You can import the statement again to bring ${n === 1 ? 'it' : 'them'} back${handAdded ? `, except ${handAdded} you added by hand` : ''}.`;
+    if (!n || !window.confirm(`Delete ${n === 1 ? 'this transaction' : `${n} transactions`}? ${warning}`)) return;
     setBusyId('clear');
     let done = 0;
     for (const t of list) if (await w.remove('transactions', t.id)()) done++;
@@ -444,6 +564,14 @@ export function AccountPanel({ w, data, open, categoryLists, gmail, onClose }) {
   const since = month ? all.filter((t) => monthOf(t.date) >= month) : [];
   const net = since.reduce((s, t) => s + (t.direction === 'in' ? t.amount : -t.amount), 0);
   const opening = month && closingNow != null ? closingNow + (isCard ? net : -net) : null;
+
+  const addEntry = async (entry) => {
+    const created = await w.create('transactions')({ ...entry, account: ref });
+    if (!created) return;
+    setAdding(false);
+    if (month) setMonth(monthOf(created.date)); // keep the new line in view
+    setMessage('Transfer added. It will be mapped when you import the statement.');
+  };
 
   const tag = async (txn, category, all = false) => {
     setBusyId(txn.id);
@@ -478,7 +606,8 @@ export function AccountPanel({ w, data, open, categoryLists, gmail, onClose }) {
           )}
         </div>
         <div className="flex flex-wrap gap-2">
-          <UploadStatement w={w} account={ref} categoryLists={categoryLists} onDone={setMessage} />
+          <Button variant="soft" icon={Plus} onClick={() => setAdding(true)}>Add transfer</Button>
+          <UploadStatement w={w} account={ref} manual={all.filter((t) => t.source === 'manual')} categoryLists={categoryLists} onDone={setMessage} />
         </div>
       </div>
 
@@ -511,7 +640,7 @@ export function AccountPanel({ w, data, open, categoryLists, gmail, onClose }) {
       )}
 
       {all.length === 0 ? (
-        <EmptyState text="No transactions yet. Upload a statement PDF, or add the statement email subject to fetch it from Gmail." />
+        <EmptyState text="No transactions yet. Add a transfer, upload a statement PDF, or add the statement email subject to fetch it from Gmail." />
       ) : (
         <>
           <div className="flex gap-4 text-xs text-stone-600">
@@ -536,6 +665,8 @@ export function AccountPanel({ w, data, open, categoryLists, gmail, onClose }) {
                         <span className="text-sm text-ink truncate">{t.description}</span>
                         {t.category ? <Badge tone={tagTone(t.category)} className="shrink-0">{t.category}</Badge> : <Badge tone={TONES.amber} className="shrink-0">Untagged</Badge>}
                       </span>
+                      {t.source === 'manual' && <span className="block text-[10.5px] text-stone-500">Added by hand · waiting for the statement</span>}
+                      {t.source !== 'manual' && t.note && <span className="block text-[10.5px] text-stone-500 truncate">Added as: {t.note}</span>}
                       {linkNames(data, t).length > 0 && <span className="block text-[10.5px] text-sky-700">Linked to {linkNames(data, t).join(', ')} · replaces the planned amount this month</span>}
                       {t.fromHold && <span className="flex items-center gap-1 text-[10.5px] text-amber-700"><Lock className="w-3 h-3" />Paid from hold</span>}
                       {EXCLUDED_TAGS.includes(t.category) && <span className="text-[10.5px] text-stone-400">Not counted as income or expense</span>}
@@ -563,6 +694,7 @@ export function AccountPanel({ w, data, open, categoryLists, gmail, onClose }) {
           )}
         </>
       )}
+      <AddEntry open={adding} currency={item.currency} categoryLists={categoryLists} onSave={addEntry} onClose={() => setAdding(false)} />
       <TxnEditor
         txn={editing}
         isCard={isCard}
