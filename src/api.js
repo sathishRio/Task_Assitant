@@ -120,6 +120,15 @@ export const learningApi = {
 export const apiOrigin = () => API_BASE || window.location.origin;
 
 export const api = {
+  notifications: () => request('GET', '/notifications'),
+  unreadNotifications: () => request('GET', '/notifications/unread'),
+  readNotification: (id) => request('POST', `/notifications/${id}/read`),
+  readAllNotifications: () => request('POST', '/notifications/read-all'),
+  deleteNotification: (id) => request('DELETE', `/notifications/${id}`),
+  clearReadNotifications: () => request('DELETE', '/notifications'),
+  snoozeNotification: (id, minutes) => request('POST', `/notifications/${id}/snooze`, { minutes }),
+  skipNotification: (id) => request('POST', `/notifications/${id}/skip`),
+  doneNotification: (id) => request('POST', `/notifications/${id}/done`), // Hub plan items
   authConfig: () => request('GET', '/auth/config'),
   signIn: (idToken) => request('POST', '/auth/google', { idToken }),
   devSignIn: () => request('POST', '/auth/dev', {}),

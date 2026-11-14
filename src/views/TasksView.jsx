@@ -80,6 +80,11 @@ export default function TasksView({ preset, fixedMode }) {
     setPhaseId(preset.phaseId || 'all');
     setPriority('all');
     setQuery('');
+    // From Notifications: open that task's details (in its workspace).
+    if (preset.openTaskId) {
+      if (!fixedMode && preset.mode && preset.mode !== state.mode) actions.setMode(preset.mode);
+      setViewingId(preset.openTaskId);
+    }
     // Home's Search button: jump straight into the search box.
     if (preset.focusSearch) {
       searchRef.current?.scrollIntoView({ block: 'center' });

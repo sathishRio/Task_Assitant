@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  CircleCheck, CircleX, Database, House, KeyRound, ListChecks, LoaderCircle, LogOut, Map as MapIcon, RefreshCw, ShieldCheck, StickyNote, Tags, Target, X,
+  Bell, CircleCheck, CircleX, Database, House, KeyRound, ListChecks, LoaderCircle, LogOut, Map as MapIcon, RefreshCw, ShieldCheck, StickyNote, Tags, Target, X,
 } from 'lucide-react';
 import { StoreProvider, useStore } from './store';
 import { api } from './api';
@@ -12,6 +12,7 @@ import CategoriesView from './views/CategoriesView';
 import VaultView from './views/VaultView';
 import StickyView from './views/StickyView';
 import WealthView from './views/wealth/WealthView';
+import NotificationsView from './views/NotificationsView';
 
 // `zone` = the DevOBJ zone colour shown as a small square beside each section.
 // `inMenu` views live in the account dropdown instead of the header nav; `hidden` views are
@@ -24,6 +25,7 @@ const VIEWS = [
   { key: 'categories', label: 'Categories', Icon: Tags, zone: 'bg-zone-orange', inMenu: true },
   { key: 'vault', label: 'Vault', Icon: KeyRound, zone: 'bg-zone-violet' }, // web only
   { key: 'wealth', label: 'Wealth', hidden: true }, // web only, #/wealth
+  { key: 'notifications', label: 'Notifications', hidden: true }, // the bell in the header
   { key: 'office', label: 'Office Tasks', hidden: true }, // #/office: Office tasks only, no header/footer
 ];
 
@@ -41,7 +43,7 @@ const viewFromHash = () => {
   return VIEWS.some((v) => v.key === key) ? key : 'home';
 };
 
-function Header({ view, navigate }) {
+function Header({ view, navigate, unread }) {
   const { state } = useStore();
   return (
     <header className="sticky top-0 z-40 bg-white border-b-[1.5px] border-ink">
@@ -81,6 +83,25 @@ function Header({ view, navigate }) {
           <span className="hidden lg:inline">Town map</span>
           <span className="lg:hidden sr-only">Town map</span>
         </a>
+        {state.user && (
+          <button
+            type="button"
+            onClick={() => navigate('notifications')}
+            aria-label={`Notifications${unread ? ` (${unread} unread)` : ''}`}
+            aria-current={view === 'notifications' ? 'page' : undefined}
+            className={cx(
+              'relative shrink-0 w-9 h-9 rounded-[10px] border-[1.5px] border-ink flex items-center justify-center hover:shadow-key transition',
+              view === 'notifications' ? 'bg-taxi text-ink' : 'bg-white text-ink',
+            )}
+          >
+            <Bell className="w-4 h-4" aria-hidden="true" />
+            {unread > 0 && (
+              <span className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 rounded-full bg-rose-600 border-2 border-white text-white text-[10px] font-bold leading-[14px] text-center">
+                {unread > 99 ? '99+' : unread}
+              </span>
+            )}
+          </button>
+        )}
         {state.user && <UserMenu user={state.user} view={view} navigate={navigate} />}
       </div>
       {/* Small screens: views as a scrollable row under the brand bar */}
@@ -327,6 +348,16 @@ function Shell() {
   const [view, setView] = useState(viewFromHash);
   // Filter handed to Tasks when another view links to it; a new object each time so repeat clicks re-apply.
   const [taskPreset, setTaskPreset] = useState(null);
+  // Unread notifications for the header bell: checked every minute while signed in.
+  const [unread, setUnread] = useState(0);
+  const signedIn = !!state.user;
+  useEffect(() => {
+    if (!signedIn) return undefined;
+    const check = () => api.unreadNotifications().then((r) => setUnread(r.unread)).catch(() => {});
+    check();
+    const t = setInterval(check, 60000);
+    return () => clearInterval(t);
+  }, [signedIn]);
 
   useEffect(() => {
     const onHash = () => setView(viewFromHash());
@@ -369,6 +400,7 @@ function Shell() {
         {view === 'vault' && <VaultView />}
         {view === 'sticky' && <StickyView />}
         {view === 'wealth' && <WealthView />}
+        {view === 'notifications' && <NotificationsView navigate={navigate} onUnread={setUnread} />}
         {view === 'office' && <TasksView preset={taskPreset} fixedMode="office" />}
       </>
     );
@@ -385,7 +417,7 @@ function Shell() {
 
   return (
     <div className="min-h-screen flex flex-col">
-      <Header view={view} navigate={navigate} />
+      <Header view={view} navigate={navigate} unread={unread} />
       <main className="flex-1 w-full max-w-6xl mx-auto px-4 sm:px-6 py-6 sm:py-8">{body}</main>
       <footer className="border-t border-stone-200 bg-white">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 py-4 flex flex-wrap items-center justify-between gap-2 text-xs text-stone-500">
