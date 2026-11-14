@@ -45,7 +45,7 @@ export const INCOME_CATEGORIES = ['Salary', 'Bonus', 'Business', 'Rental', 'Inte
 // "Loan EMI" lines are cash flow only; the commitment total takes EMIs from the liabilities instead.
 export const LOAN_EMI = 'Loan EMI';
 export const EXPENSE_CATEGORIES = [
-  'Housing', 'Utilities', 'Groceries', 'Dining', 'Transport', 'Insurance', 'Health', 'Education',
+  'Housing', 'Utilities', 'Groceries', 'Dining', 'Transport', 'Vehicle license', 'Insurance', 'Health', 'Education',
   'Shopping', 'Travel', 'Entertainment', 'Family support', LOAN_EMI, 'Other',
 ];
 
@@ -407,7 +407,9 @@ export function expensesByCategory(entries, month, base, rates) {
     if (note) c.notes.set(note, (c.notes.get(note) || 0) + v);
     map.set(e.category, c);
   }
+  // Cashback (negative) lowers the month's total but has no bar of its own.
   return [...map.values()]
+    .filter((c) => c.amount > 0)
     .map((c) => ({ ...c, notes: [...c.notes].map(([note, amount]) => ({ note, amount })).sort((a, b) => b.amount - a.amount) }))
     .sort((a, b) => b.amount - a.amount);
 }
@@ -771,6 +773,14 @@ export function withStatementBalances(assets, liabilities, transactions = []) {
 // Same list as server/src/statements.js.
 export const EXCLUDED_TAGS = ['Transfer', 'Card payment', 'Already counted', 'Ignore'];
 export const UNTAGGED = 'Uncategorized';
+export const CASHBACK = 'Cashback';
+// The expense category a cashback line gives money back on: the one picked, else a guess from its wording.
+const CASHBACK_WORDS = [
+  [/MOVIE|CINEMA|VOX|REEL|NOVO|ENTERTAIN/i, 'Entertainment'], [/DINING|RESTAURANT|FOOD/i, 'Dining'],
+  [/GROCER|SUPERMARKET|HYPERMARKET/i, 'Groceries'], [/FUEL|PETROL|ENOC|ADNOC|TRANSPORT/i, 'Transport'],
+  [/TRAVEL|HOTEL|AIRLINE/i, 'Travel'], [/UTILIT|DEWA|TELECOM|MOBILE/i, 'Utilities'], [/SCHOOL|EDUCATION/i, 'Education'],
+];
+export const cashbackFor = (t) => t.offsets || CASHBACK_WORDS.find(([re]) => re.test(t.description || ''))?.[1] || CASHBACK;
 
 // Merchant of a statement line, for "tag all from this merchant". Same as server/src/statements.js.
 const PREFIX_RE = /^(DEBIT CARD PURCHASE|CREDIT CARD PURCHASE|CARD PURCHASE|POS PURCHASE|PURCHASE|E-?COM(MERCE)? PURCHASE|APPLE PAY|SAMSUNG PAY)\s*[-:]?\s*/i;
@@ -801,8 +811,9 @@ export function splitPlanned(entries, transactions = [], rates) {
   const lines = transactions
     .filter((t) => !EXCLUDED_TAGS.includes(t.category))
     .map((t) => ({
-      id: `txn-${t.id}`, txnId: t.id, month: monthOf(t.date), kind: t.direction === 'in' ? 'income' : 'expense',
-      category: t.category || UNTAGGED, amount: t.amount, currency: t.currency, note: t.description, txnAccount: t.account, links: linksOf(t),
+      // Cashback is money back on spending, not income: it lowers the month's expenses.
+      id: `txn-${t.id}`, txnId: t.id, month: monthOf(t.date), kind: t.direction === 'in' && t.category !== CASHBACK ? 'income' : 'expense',
+      category: t.category === CASHBACK && t.direction === 'in' ? cashbackFor(t) : t.category || UNTAGGED, amount: t.category === CASHBACK && t.direction === 'in' ? -t.amount : t.amount, currency: t.currency, note: t.description, txnAccount: t.account, links: linksOf(t),
     }));
   const keyOf = (e) => (e.fixedId ? `fixed:${e.fixedId}` : `liability:${e.liabilityId}`);
   const used = new Set();

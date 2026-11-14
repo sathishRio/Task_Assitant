@@ -4,7 +4,7 @@ import { wealthApi } from '../../api';
 import { Badge, Button, EmptyState, IconButton, Modal, cx, inputClass, selectClass } from '../../ui';
 import { TONES } from '../../theme';
 import { todayStr } from '../../dates';
-import { EXCLUDED_TAGS, formatMoney, formatMonth, linksOf, merchantKey, monthOf, thisMonth } from './calc';
+import { CASHBACK, cashbackFor, EXCLUDED_TAGS, formatMoney, formatMonth, linksOf, merchantKey, monthOf, thisMonth } from './calc';
 
 const PAGE_SIZE = 15;
 
@@ -92,10 +92,10 @@ function EntryDetails({ form, set }) {
 }
 
 // Popup to add a credit or debit by hand. It counts straight away; a later statement maps to it.
-function AddEntry({ open, currency, categoryLists, onSave, onClose }) {
+function AddEntry({ open, isCard, currency, categoryLists, onSave, onClose }) {
   const [form, setForm] = useState(null);
   const [busy, setBusy] = useState(false);
-  useEffect(() => setForm(open ? { direction: 'out', description: '', date: todayStr(), amount: '', category: 'Transfer' } : null), [open]);
+  useEffect(() => setForm(open ? { direction: 'out', description: '', date: todayStr(), amount: '', category: isCard ? '' : 'Transfer' } : null), [open, isCard]);
   if (!open || !form) return null;
   const set = (patch) => setForm((f) => ({ ...f, ...patch }));
   const amount = Math.round(Number(String(form.amount).replace(/,/g, '')) * 100) / 100;
@@ -110,7 +110,7 @@ function AddEntry({ open, currency, categoryLists, onSave, onClose }) {
   return (
     <Modal
       open
-      title="Add transfer"
+      title={isCard ? 'Add card entry' : 'Add transfer'}
       onClose={onClose}
       footer={
         <>
@@ -142,7 +142,7 @@ function TxnEditor({ txn, isCard, data, categoryLists, fmt, onSave, onTag, onDel
   const [form, setForm] = useState(null);
   const [busy, setBusy] = useState(false);
   useEffect(
-    () => setForm(txn && { amount: String(txn.amount), category: txn.category || '', linkTo: linksOf(txn), fromHold: !!txn.fromHold, description: txn.description, date: txn.date, direction: txn.direction }),
+    () => setForm(txn && { amount: String(txn.amount), category: txn.category || '', linkTo: linksOf(txn), fromHold: !!txn.fromHold, offsets: txn.offsets || '', description: txn.description, date: txn.date, direction: txn.direction }),
     [txn],
   );
   if (!txn || !form) return null;
@@ -158,6 +158,7 @@ function TxnEditor({ txn, isCard, data, categoryLists, fmt, onSave, onTag, onDel
       amount,
       linkTo: form.linkTo,
       fromHold: !isCard && form.direction === 'out' && form.fromHold,
+      offsets: form.category === CASHBACK ? form.offsets : '',
       ...(manual ? { description: form.description.trim(), date: form.date, direction: form.direction } : {}),
     });
     if (ok && form.category !== (txn.category || '')) await onTag(form.category);
@@ -198,6 +199,16 @@ function TxnEditor({ txn, isCard, data, categoryLists, fmt, onSave, onTag, onDel
           <TagSelect value={form.category} direction={form.direction} categoryLists={categoryLists} onChange={(category) => set({ category })} wide />
         </label>
       </div>
+      {form.category === CASHBACK && form.direction === 'in' && (
+        <label className="block">
+          <span className="block text-xs font-semibold text-stone-700 mb-1">Reduces spend on</span>
+          <select className={cx(selectClass, 'w-full')} value={form.offsets} onChange={(e) => set({ offsets: e.target.value })}>
+            <option value="">Guess from wording ({cashbackFor({ description: form.description })})</option>
+            {categoryLists.expense.map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
+          <span className="block text-xs text-stone-500 mt-1">The cashback is taken off this category's spend, not counted as income.</span>
+        </label>
+      )}
       <div>
         <span className="block text-xs font-semibold text-stone-700 mb-1">Pays (replaces the planned amount this month)</span>
         <LinkChecks value={form.linkTo} direction={form.direction} data={data} onChange={(linkTo) => set({ linkTo })} />
@@ -570,7 +581,7 @@ export function AccountPanel({ w, data, open, categoryLists, gmail, onClose }) {
     if (!created) return;
     setAdding(false);
     if (month) setMonth(monthOf(created.date)); // keep the new line in view
-    setMessage('Transfer added. It will be mapped when you import the statement.');
+    setMessage(`${isCard ? 'Entry' : 'Transfer'} added. It will be mapped when you import the statement.`);
   };
 
   const tag = async (txn, category, all = false) => {
@@ -606,7 +617,7 @@ export function AccountPanel({ w, data, open, categoryLists, gmail, onClose }) {
           )}
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button variant="soft" icon={Plus} onClick={() => setAdding(true)}>Add transfer</Button>
+          <Button variant="soft" icon={Plus} onClick={() => setAdding(true)}>{isCard ? 'Add entry' : 'Add transfer'}</Button>
           <UploadStatement w={w} account={ref} manual={all.filter((t) => t.source === 'manual')} categoryLists={categoryLists} onDone={setMessage} />
         </div>
       </div>
@@ -694,7 +705,7 @@ export function AccountPanel({ w, data, open, categoryLists, gmail, onClose }) {
           )}
         </>
       )}
-      <AddEntry open={adding} currency={item.currency} categoryLists={categoryLists} onSave={addEntry} onClose={() => setAdding(false)} />
+      <AddEntry open={adding} isCard={isCard} currency={item.currency} categoryLists={categoryLists} onSave={addEntry} onClose={() => setAdding(false)} />
       <TxnEditor
         txn={editing}
         isCard={isCard}
