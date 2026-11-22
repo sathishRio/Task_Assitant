@@ -161,3 +161,12 @@ export const api = {
   updateCertification: (id, data) => request('PUT', `/certifications/${id}`, data),
   deleteCertification: (id) => request('DELETE', `/certifications/${id}`),
 };
+
+// Fitness: the central plan (workouts, diet, phases, targets) and the weekly/monthly check-ins.
+// The daily tracker itself lives in the Hub app.
+const q = (o) => new URLSearchParams(o).toString();
+export const fitnessApi = {
+  plan: (today) => request('GET', `/fitness/plan?${q({ today })}`),
+  savePlan: (plan, effectiveFrom) => request('PUT', '/fitness/plan', { plan, effectiveFrom }),
+  progress: (today) => request('GET', `/fitness/progress?${q({ today })}`),
+};

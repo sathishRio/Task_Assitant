@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  Bell, CircleCheck, CircleX, Database, House, KeyRound, ListChecks, LoaderCircle, LogOut, Map as MapIcon, RefreshCw, ShieldCheck, StickyNote, Tags, Target, X,
+  Bell, CircleCheck, Dumbbell, CircleX, Database, House, KeyRound, ListChecks, LoaderCircle, LogOut, Map as MapIcon, RefreshCw, ShieldCheck, StickyNote, Tags, Target, X,
 } from 'lucide-react';
 import { StoreProvider, useStore } from './store';
 import { api } from './api';
@@ -13,6 +13,7 @@ import VaultView from './views/VaultView';
 import StickyView from './views/StickyView';
 import WealthView from './views/wealth/WealthView';
 import NotificationsView from './views/NotificationsView';
+import FitnessView from './views/fitness/FitnessView';
 
 // `zone` = the DevOBJ zone colour shown as a small square beside each section.
 // `inMenu` views live in the account dropdown instead of the header nav; `hidden` views are
@@ -21,6 +22,7 @@ const VIEWS = [
   { key: 'home', label: 'Home', Icon: House, zone: 'bg-ink' },
   { key: 'tasks', label: 'Tasks', Icon: ListChecks, zone: 'bg-zone-blue' },
   { key: 'career', label: 'Career', Icon: Target, zone: 'bg-zone-green' },
+  { key: 'fitness', label: 'Fitness', Icon: Dumbbell, zone: 'bg-zone-cyan' }, // plan & check-ins; daily tracking is in the Hub app
   { key: 'sticky', label: 'Notes', Icon: StickyNote, zone: 'bg-zone-mag' }, // #/sticky: linked from the DevOBJ island
   { key: 'categories', label: 'Categories', Icon: Tags, zone: 'bg-zone-orange', inMenu: true },
   { key: 'vault', label: 'Vault', Icon: KeyRound, zone: 'bg-zone-violet' }, // web only
@@ -400,6 +402,7 @@ function Shell() {
         {view === 'vault' && <VaultView />}
         {view === 'sticky' && <StickyView />}
         {view === 'wealth' && <WealthView />}
+        {view === 'fitness' && <FitnessView />}
         {view === 'notifications' && <NotificationsView navigate={navigate} onUnread={setUnread} />}
         {view === 'office' && <TasksView preset={taskPreset} fixedMode="office" />}
       </>
