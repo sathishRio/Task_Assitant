@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowLeft, BellRing, CircleCheck, CircleX, Globe, LoaderCircle, RefreshCw, Send, Smartphone, Trash } from 'lucide-react';
+import { ArrowLeft, BellRing, CircleCheck, CircleX, LoaderCircle, RefreshCw, Send, Smartphone, Trash } from 'lucide-react';
 import { api } from '../api';
 import { Button, Card, EmptyState, Field, IconButton, MicroHeading, PageHero, cx, inputClass } from '../ui';
 
-// Push test (#/push-test, from Notifications): the phones and browsers signed up for notifications on this
-// account, a test send to one or all of them (plain, or an alert with Done / Skip / Remind me), what each
-// push service answered, and which button was pressed on the phone. Test alerts change no tasks.
+// Push test (#/push-test, from Notifications): the phone app installs signed up for notifications on this
+// account (browsers don't get push), a test send to one or all of them (plain, or an alert with Done / Skip /
+// Remind me), what Firebase answered, and which button was pressed on the phone. Test alerts change no tasks.
 
 const KINDS = [
   { key: 'plain', label: 'Plain notification', hint: 'Title and text only, no buttons.' },
@@ -19,15 +19,13 @@ const POLL_MS = 3000;
 const POLL_FOR_MS = 5 * 60 * 1000;
 const PRESSED = { done: 'Done was pressed', skip: 'Skip was pressed', snooze: 'Remind me was pressed' };
 
-// What an error from Firebase / Web Push usually means, in plain words.
+// What an error from Firebase usually means, in plain words.
 function hintFor(error = '') {
   if (/third-party-auth-error/.test(error)) return 'Apple rejected Firebase: the APNs key in Firebase (Project settings → Cloud Messaging) is missing or wrong (Key ID, Team ID, or a different app).';
   if (/registration-token-not-registered/.test(error)) return 'This app install is no longer registered (reinstalled, or the token changed). In the app: Settings → Daily reminder → Turn off, then Turn on.';
   if (/invalid-registration-token|invalid-argument/.test(error)) return 'The device token is not valid. In the app, turn reminders off and on again.';
   if (/mismatched-credential|sender-id-mismatch/.test(error)) return "The server's FIREBASE_SERVICE_ACCOUNT is from a different Firebase project than the app.";
   if (/FIREBASE_SERVICE_ACCOUNT/.test(error)) return 'Check FIREBASE_SERVICE_ACCOUNT on the API server: the service-account JSON, or a path to it.';
-  if (/expired|410|404/.test(error)) return 'This browser subscription has expired. Turn reminders on again in that browser.';
-  if (/403|401/.test(error)) return 'The push service refused the VAPID keys. Check VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY on the server.';
   return '';
 }
 const when = (d) => (d ? new Date(d).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '');
@@ -117,7 +115,7 @@ export default function PushTestView({ navigate }) {
         icon={BellRing}
         eyebrow="Notifications"
         title="Push test"
-        description="Send a test to your phone app or browser and see what came back. Test alerts have working Done, Skip and Remind me buttons and don't change any tasks."
+        description="Send a test to the DevOBJ Hub app on your phone and see what came back. Test alerts have working Done, Skip and Remind me buttons and don't change any tasks."
         actions={(
           <>
             <Button variant="soft" icon={ArrowLeft} onClick={() => navigate('notifications')}>Inbox</Button>
@@ -137,7 +135,6 @@ export default function PushTestView({ navigate }) {
               <MicroHeading>Server setup</MicroHeading>
               <div className="flex flex-col gap-2.5">
                 <SetupRow ok={status.app} label="Phone app (Firebase)" fix="Set FIREBASE_SERVICE_ACCOUNT on the API server and restart it." />
-                <SetupRow ok={status.web} label="Browser (Web Push)" fix="Set VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY on the API server." />
               </div>
             </Card>
 
@@ -149,12 +146,11 @@ export default function PushTestView({ navigate }) {
                 <div className="divide-y divide-stone-200">
                   {devices.map((d) => {
                     const r = resultOf(d.id);
-                    const DeviceIcon = d.type === 'web' ? Globe : Smartphone;
                     return (
                       <div key={d.id} className="py-3 first:pt-0 last:pb-0 flex flex-col gap-2">
                         <div className="flex items-center gap-3">
                           <span className="w-9 h-9 shrink-0 rounded-xl border-[1.5px] border-ink bg-sky-100 flex items-center justify-center">
-                            <DeviceIcon className="w-4 h-4 text-ink" aria-hidden="true" />
+                            <Smartphone className="w-4 h-4 text-ink" aria-hidden="true" />
                           </span>
                           <div className="flex-1 min-w-0">
                             <div className="text-sm font-bold text-ink truncate">{d.label}</div>
@@ -224,7 +220,7 @@ export default function PushTestView({ navigate }) {
                       {run.results.map((r) => (
                         <Result key={r.id} ok={r.ok} hint={!r.ok && hintFor(r.error)}>{nameOf(r.id)}{r.ok ? '' : `: ${r.error}`}</Result>
                       ))}
-                      {run.sent > 0 && <p className="text-xs text-stone-500">“Accepted” means Firebase or the browser's push service took it. If it still doesn't show on the phone, check its notification settings and Focus / Do Not Disturb.</p>}
+                      {run.sent > 0 && <p className="text-xs text-stone-500">“Accepted” means Firebase took it. If it still doesn't show on the phone, check its notification settings and Focus / Do Not Disturb.</p>}
                     </>
                   )}
                   {run.state === 'unknown' && <p className="text-xs text-stone-500">The server restarted, so the send result is gone. Button presses still show below.</p>}
