@@ -129,6 +129,11 @@ export const api = {
   snoozeNotification: (id, minutes) => request('POST', `/notifications/${id}/snooze`, { minutes }),
   skipNotification: (id) => request('POST', `/notifications/${id}/skip`),
   doneNotification: (id) => request('POST', `/notifications/${id}/done`), // Hub plan items
+  // Push test (#/push-test): devices on this account, a test send to one or all, and its result.
+  pushTestStatus: () => request('GET', '/notifications/test/status'),
+  pushTestSend: (body) => request('POST', '/notifications/test', body),
+  pushTestResult: (id) => request('GET', `/notifications/test/${id}`),
+  pushTestRemoveDevice: (id) => request('DELETE', `/notifications/test/devices/${id}`),
   authConfig: () => request('GET', '/auth/config'),
   signIn: (idToken) => request('POST', '/auth/google', { idToken }),
   devSignIn: () => request('POST', '/auth/dev', {}),

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { AlarmClock, Bell, CalendarClock, Check, CheckCheck, Clock, SkipForward, Sun, Trash, TriangleAlert } from 'lucide-react';
+import { AlarmClock, Bell, BellRing, CalendarClock, Check, CheckCheck, Clock, SkipForward, Sun, Trash, TriangleAlert } from 'lucide-react';
 import { api } from '../api';
 import { useStore } from '../store';
 import { Button, Card, EmptyState, IconButton, PageHero, cx } from '../ui';
@@ -111,6 +111,7 @@ export default function NotificationsView({ navigate, onUnread }) {
           <>
             <Button variant="soft" icon={CheckCheck} disabled={!unread} onClick={() => act(api.readAllNotifications)}>Mark all read</Button>
             <Button variant="soft" icon={Trash} disabled={!items?.some((n) => n.readAt)} onClick={() => act(api.clearReadNotifications)}>Clear read</Button>
+            <Button variant="soft" icon={BellRing} onClick={() => navigate('push-test')}>Push test</Button>
           </>
         )}
       >

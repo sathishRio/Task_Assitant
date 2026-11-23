@@ -13,6 +13,7 @@ import VaultView from './views/VaultView';
 import StickyView from './views/StickyView';
 import WealthView from './views/wealth/WealthView';
 import NotificationsView from './views/NotificationsView';
+import PushTestView from './views/PushTestView';
 import FitnessView from './views/fitness/FitnessView';
 
 // `zone` = the DevOBJ zone colour shown as a small square beside each section.
@@ -28,6 +29,7 @@ const VIEWS = [
   { key: 'vault', label: 'Vault', Icon: KeyRound, zone: 'bg-zone-violet' }, // web only
   { key: 'wealth', label: 'Wealth', hidden: true }, // web only, #/wealth
   { key: 'notifications', label: 'Notifications', hidden: true }, // the bell in the header
+  { key: 'push-test', label: 'Push test', hidden: true }, // #/push-test, from Notifications
   { key: 'office', label: 'Office Tasks', hidden: true }, // #/office: Office tasks only, no header/footer
 ];
 
@@ -93,7 +95,7 @@ function Header({ view, navigate, unread }) {
             aria-current={view === 'notifications' ? 'page' : undefined}
             className={cx(
               'relative shrink-0 w-9 h-9 rounded-[10px] border-[1.5px] border-ink flex items-center justify-center hover:shadow-key transition',
-              view === 'notifications' ? 'bg-taxi text-ink' : 'bg-white text-ink',
+              view === 'notifications' || view === 'push-test' ? 'bg-taxi text-ink' : 'bg-white text-ink',
             )}
           >
             <Bell className="w-4 h-4" aria-hidden="true" />
@@ -404,6 +406,7 @@ function Shell() {
         {view === 'wealth' && <WealthView />}
         {view === 'fitness' && <FitnessView />}
         {view === 'notifications' && <NotificationsView navigate={navigate} onUnread={setUnread} />}
+        {view === 'push-test' && <PushTestView navigate={navigate} />}
         {view === 'office' && <TasksView preset={taskPreset} fixedMode="office" />}
       </>
     );
