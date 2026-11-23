@@ -203,6 +203,7 @@ export default function PushTestView({ navigate }) {
                 <div>
                   <Button type="submit" variant="taxi" icon={busy ? LoaderCircle : Send} disabled={busy || !devices.length}>{busy ? 'Sending…' : 'Send test'}</Button>
                 </div>
+                {!devices.length && <p className="text-xs text-rose-700">No phone is signed up yet, so there is nowhere to send. In the Hub app on your phone: Settings → Daily reminder → Turn on reminders, then Refresh here.</p>}
               </form>
             </Card>
 
